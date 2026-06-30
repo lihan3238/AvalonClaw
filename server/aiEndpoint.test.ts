@@ -18,6 +18,7 @@ describe("AI endpoint orchestration", () => {
     });
 
     expect(result.source).toBe("fallback");
+    expect(result.fallbackReason).toBe("missing-config");
     expect(result.action).toEqual({ type: "proposeTeam", teamIds: ["p1", "p2"] });
   });
 
@@ -43,5 +44,47 @@ describe("AI endpoint orchestration", () => {
 
     expect(result).toMatchObject({ source: "model", action: { type: "vote", approve: true } });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports illegal model actions as fallback diagnostics", async () => {
+    const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "{\"speech\":\"Approve.\",\"action\":{\"type\":\"vote\",\"approve\":true}}" } }] }), {
+        status: 200
+      })
+    );
+
+    const result = await createAiActionResult({
+      body: {
+        state,
+        playerId: "p2",
+        actionKind: "vote",
+        legalActions: [{ type: "vote", approve: false }],
+        reasoningEffort: "high"
+      },
+      config,
+      fetchImpl
+    });
+
+    expect(result).toMatchObject({ source: "fallback", fallbackReason: "illegal-action", action: { type: "vote", approve: false } });
+  });
+
+  it("reports API failures as fallback diagnostics", async () => {
+    const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), { status: 500 }));
+
+    const result = await createAiActionResult({
+      body: {
+        state,
+        playerId: "p2",
+        actionKind: "vote",
+        legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+        reasoningEffort: "high"
+      },
+      config,
+      fetchImpl
+    });
+
+    expect(result).toMatchObject({ source: "fallback", fallbackReason: "api-error" });
   });
 });

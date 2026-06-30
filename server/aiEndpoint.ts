@@ -34,7 +34,7 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
   };
 
   if (!hasUsableOpenAIConfig(effectiveConfig)) {
-    return { ...fallback, source: "fallback" };
+    return { ...fallback, source: "fallback", fallbackReason: "missing-config" };
   }
 
   try {
@@ -58,7 +58,7 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
 
     return parseAiDecision(content, legalActions, fallback);
   } catch {
-    return { ...fallback, source: "fallback" };
+    return { ...fallback, source: "fallback", fallbackReason: "api-error" };
   }
 }
 

@@ -12,7 +12,7 @@ import {
   proposeTeam,
   submitQuestCard
 } from "../src/game/rules";
-import type { AiActionKind, LegalAction, ReasoningEffort, TableLanguage } from "../src/ai/types";
+import type { AiActionKind, AiFallbackReason, LegalAction, ReasoningEffort, TableLanguage } from "../src/ai/types";
 import type { GameState } from "../src/game/types";
 
 dotenv.config();
@@ -30,6 +30,7 @@ interface TraceEntry {
   reasoningEffort: ReasoningEffort;
   actionKind: AiActionKind;
   source: "model" | "fallback";
+  fallbackReason?: AiFallbackReason;
   modelTier: ModelTier;
   action: LegalAction;
   speech: string;
@@ -168,6 +169,7 @@ async function playRealApiGame(input: {
       modelTier: playerProfile.modelTier,
       actionKind: next.actionKind,
       source: decision.source,
+      fallbackReason: decision.fallbackReason,
       action: decision.action,
       speech: decision.speech
     };

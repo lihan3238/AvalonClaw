@@ -31,6 +31,7 @@ describe("AI browser client validation", () => {
 
     expect(result).toEqual({
       source: "fallback",
+      fallbackReason: "client-illegal-action",
       speech: "I will keep this team straightforward and readable.",
       action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
     });
@@ -43,6 +44,7 @@ describe("AI browser client validation", () => {
     });
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({
       source: "fallback",
+      fallbackReason: "api-error",
       speech: "Endpoint fallback.",
       action: { type: "vote", approve: false }
     }), { status: 200, headers: { "Content-Type": "application/json" } }))));
@@ -59,8 +61,34 @@ describe("AI browser client validation", () => {
 
     expect(result).toEqual({
       source: "fallback",
+      fallbackReason: "api-error",
       speech: "Endpoint fallback.",
       action: { type: "vote", approve: false }
+    });
+  });
+
+  it("reports local network failures as fallback diagnostics", async () => {
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"]
+    });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("offline"))));
+
+    const result = await requestAiAction({
+      state,
+      playerId: "p1",
+      actionKind: "proposeTeam",
+      legalActions: [{ type: "proposeTeam", teamIds: ["p1", "p2"] }],
+      reasoningEffort: "low",
+      language: "en",
+      model: "model-a"
+    });
+
+    expect(result).toEqual({
+      source: "fallback",
+      fallbackReason: "network-error",
+      speech: "I will keep this team straightforward and readable.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
     });
   });
 });

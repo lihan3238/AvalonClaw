@@ -35,6 +35,15 @@ export interface AiDecision {
   action: LegalAction;
 }
 
+export type AiFallbackReason =
+  | "missing-config"
+  | "api-error"
+  | "invalid-json"
+  | "illegal-action"
+  | "client-illegal-action"
+  | "network-error";
+
 export interface AiDecisionResult extends AiDecision {
   source: "model" | "fallback";
+  fallbackReason?: AiFallbackReason;
 }

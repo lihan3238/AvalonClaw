@@ -18,8 +18,8 @@ describe("AI prompt private information", () => {
       reasoningEffort: "high"
     }).messages.map((message) => message.content).join("\n");
 
-    expect(prompt).toContain("Known evil players: p4, p5, p7");
-    expect(prompt).not.toContain("Known evil players: p4, p5, p6, p7");
+    expect(prompt).toContain("KE=p4,p5,p7");
+    expect(prompt).not.toContain("KE=p4,p5,p6,p7");
     expect(prompt).toContain("Mordred may be hidden from Merlin");
   });
 
@@ -33,7 +33,7 @@ describe("AI prompt private information", () => {
       reasoningEffort: "medium"
     }).messages.map((message) => message.content).join("\n");
 
-    expect(prompt).toContain("Merlin candidates: p1, p5");
+    expect(prompt).toContain("MC=p1,p5");
     expect(prompt).toContain("Do not state that either candidate is certainly Merlin");
   });
 
@@ -47,8 +47,8 @@ describe("AI prompt private information", () => {
       reasoningEffort: "low"
     }).messages.map((message) => message.content).join("\n");
 
-    expect(prompt).toContain("Known evil players: none");
-    expect(prompt).toContain("Merlin candidates: none");
+    expect(prompt).toContain("KE=-");
+    expect(prompt).toContain("MC=-");
     expect(prompt).not.toContain("p4=Assassin");
     expect(prompt).not.toContain("p5=Morgana");
   });
@@ -72,8 +72,7 @@ describe("AI prompt public vote information", () => {
       reasoningEffort: "medium"
     }).messages.map((message) => message.content).join("\n");
 
-    expect(prompt).toContain("Vote submissions: 1 of 5 submitted");
-    expect(prompt).toContain("individual votes are hidden until all players have voted");
+    expect(prompt).toContain("V=1/5:hidden");
     expect(prompt).not.toContain("p2:approve");
   });
 
@@ -97,8 +96,7 @@ describe("AI prompt public vote information", () => {
       reasoningEffort: "medium"
     }).messages.map((message) => message.content).join("\n");
 
-    expect(prompt).toContain("Quest card submissions: 1 of 2 submitted");
-    expect(prompt).toContain("individual quest cards are hidden");
+    expect(prompt).toContain("QC=1/2:hidden");
     expect(prompt).not.toContain("p1:success");
   });
 });
@@ -123,9 +121,9 @@ describe("AI prompt public talk order", () => {
       reasoningEffort: "medium"
     }).messages.map((message) => message.content).join("\n");
 
-    expect(prompt).toContain("Chronological public talk; newest entry is last");
-    expect(prompt).toContain("1. p1 AI 1: I trust p2 first.");
-    expect(prompt).toContain("2. p2 AI 2: That trust came too early.");
+    expect(prompt).toContain("TT oldest>newest");
+    expect(prompt).toContain("1|p1|AI 1|I trust p2 first.");
+    expect(prompt).toContain("2|p2|AI 2|That trust came too early.");
   });
 });
 
@@ -184,9 +182,13 @@ describe("AI prompt token budget", () => {
     }).messages.map((message) => message.content).join("\n");
 
     expect(legalActions).toHaveLength(252);
-    expect(prompt).toContain("LA proposeTeam size=5 ids=p1,p2,p3,p4,p5,p6,p7,p8,p9,p10");
+    expect(prompt).toContain("LA pt n=5 ids=p1,p2,p3,p4,p5,p6,p7,p8,p9,p10");
     expect(prompt).not.toContain(JSON.stringify(legalActions));
-    expect(prompt.length).toBeLessThan(2600);
+    expect(prompt).not.toContain("Private information:");
+    expect(prompt).not.toContain("Public game state:");
+    expect(prompt).not.toContain("Role strategy:");
+    expect(prompt).toContain("OUT ");
+    expect(prompt.length).toBeLessThan(1800);
   });
 });
 
@@ -219,13 +221,41 @@ describe("AI response parsing", () => {
     });
   });
 
+  it("accepts compact AI-only JSON aliases and normalizes them to game actions", () => {
+    expect(parseAiDecision('{"s":"Approve.","a":{"t":"v","ok":true}}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: false }
+    })).toEqual({ speech: "Approve.", action: { type: "vote", approve: true }, source: "model" });
+
+    expect(parseAiDecision('{"s":"Same team.","a":{"t":"pt","ids":["p2","p1"]}}', [{ type: "proposeTeam", teamIds: ["p1", "p2"] }], {
+      speech: "Fallback",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
+    })).toEqual({ speech: "Same team.", action: { type: "proposeTeam", teamIds: ["p2", "p1"] }, source: "model" });
+
+    expect(parseAiDecision('{"s":"Resolving.","a":{"t":"q","c":"success"}}', [{ type: "quest", card: "success" }], {
+      speech: "Fallback",
+      action: { type: "quest", card: "success" }
+    })).toEqual({ speech: "Resolving.", action: { type: "quest", card: "success" }, source: "model" });
+
+    expect(parseAiDecision('{"s":"Targeting.","a":{"t":"as","id":"p3"}}', [{ type: "assassinate", targetId: "p3" }], {
+      speech: "Fallback",
+      action: { type: "assassinate", targetId: "p2" }
+    })).toEqual({ speech: "Targeting.", action: { type: "assassinate", targetId: "p3" }, source: "model" });
+  });
+
   it("falls back when JSON is malformed or the action is illegal", () => {
     const fallback = { speech: "No legal model action. Rejecting.", action: { type: "vote" as const, approve: false } };
 
-    expect(parseAiDecision("not json", legalVotes, fallback)).toEqual({ ...fallback, source: "fallback" });
+    expect(parseAiDecision("not json", legalVotes, fallback)).toEqual({ ...fallback, source: "fallback", fallbackReason: "invalid-json" });
     expect(parseAiDecision('{"speech":"Skip","action":{"type":"vote","approve":"maybe"}}', legalVotes, fallback)).toEqual({
       ...fallback,
-      source: "fallback"
+      source: "fallback",
+      fallbackReason: "invalid-json"
+    });
+    expect(parseAiDecision('{"speech":"Illegal","action":{"type":"vote","approve":true}}', [{ type: "vote", approve: false }], fallback)).toEqual({
+      ...fallback,
+      source: "fallback",
+      fallbackReason: "illegal-action"
     });
   });
 });

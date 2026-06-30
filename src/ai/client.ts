@@ -1,6 +1,6 @@
 import { chooseFallbackDecision } from "./fallback";
 import { parseAiDecision } from "./prompt";
-import type { AiActionKind, AiDecisionResult, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
+import type { AiActionKind, AiDecisionResult, AiFallbackReason, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
 import type { GameState } from "../game/types";
 
 interface RequestAiActionInput {
@@ -27,13 +27,23 @@ export async function requestAiAction(input: RequestAiActionInput): Promise<AiDe
     }
 
     const raw = await response.text();
+    const endpointSource = readEndpointSource(raw);
+    const endpointReason = readEndpointFallbackReason(raw);
     const decision = parseAiDecision(raw, input.legalActions, fallback);
-    return {
-      ...decision,
-      source: readEndpointSource(raw) === "fallback" ? "fallback" : decision.source
-    };
+    if (endpointSource === "fallback") {
+      return {
+        ...decision,
+        source: "fallback",
+        fallbackReason: endpointReason ?? decision.fallbackReason ?? "api-error"
+      };
+    }
+    if (decision.source === "fallback" && decision.fallbackReason === "illegal-action" && endpointSource === "model") {
+      return { ...decision, fallbackReason: "client-illegal-action" };
+    }
+
+    return decision;
   } catch {
-    return { ...fallback, source: "fallback" };
+    return { ...fallback, source: "fallback", fallbackReason: "network-error" };
   }
 }
 
@@ -44,4 +54,22 @@ function readEndpointSource(raw: string): "model" | "fallback" | null {
   } catch {
     return null;
   }
+}
+
+function readEndpointFallbackReason(raw: string): AiFallbackReason | null {
+  try {
+    const parsed = JSON.parse(raw) as { fallbackReason?: unknown };
+    return isAiFallbackReason(parsed.fallbackReason) ? parsed.fallbackReason : null;
+  } catch {
+    return null;
+  }
+}
+
+function isAiFallbackReason(value: unknown): value is AiFallbackReason {
+  return value === "missing-config"
+    || value === "api-error"
+    || value === "invalid-json"
+    || value === "illegal-action"
+    || value === "client-illegal-action"
+    || value === "network-error";
 }

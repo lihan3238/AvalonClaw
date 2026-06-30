@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getRoleKnowledge, ROLE_DEFINITIONS } from "../game/rules";
 import type { GameState, Player } from "../game/types";
-import type { AiActionKind, AiDecision, AiDecisionResult, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
+import type { AiActionKind, AiDecision, AiDecisionResult, AiFallbackReason, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
 
 interface BuildPromptInput {
   state: GameState;
@@ -26,6 +26,18 @@ const decisionSchema = z.object({
   action: actionSchema
 });
 
+const compactActionSchema = z.discriminatedUnion("t", [
+  z.object({ t: z.literal("pt"), ids: z.array(z.string()).min(1) }),
+  z.object({ t: z.literal("v"), ok: z.boolean() }),
+  z.object({ t: z.literal("q"), c: z.enum(["success", "fail"]) }),
+  z.object({ t: z.literal("as"), id: z.string() })
+]);
+
+const compactDecisionSchema = z.object({
+  s: z.string().trim().min(1).max(240),
+  a: compactActionSchema
+});
+
 export function createPersona(playerId: string, playerCount: number): Persona {
   const seed = hashString(`${playerId}:${playerCount}:avalon`);
   return {
@@ -42,40 +54,27 @@ export function buildAIPrompt(input: BuildPromptInput): { messages: ChatMessage[
   const knowledge = getRoleKnowledge(input.state, input.playerId);
   const publicState = summarizePublicState(input.state);
   const privateState = [
-    `You are ${player.id}, seat ${player.seat + 1}, role ${ROLE_DEFINITIONS[player.role].label}, allegiance ${player.allegiance}.`,
-    `Known evil players: ${knowledge.knownEvilIds.length ? knowledge.knownEvilIds.join(", ") : "none"}.`,
-    `Merlin candidates: ${knowledge.merlinCandidateIds.length ? knowledge.merlinCandidateIds.join(", ") : "none"}.`,
+    `SELF id=${player.id} seat=${player.seat + 1} role=${player.role} label=${ROLE_DEFINITIONS[player.role].label} side=${player.allegiance}`,
+    `KE=${compactList(knowledge.knownEvilIds)} MC=${compactList(knowledge.merlinCandidateIds)}`,
     roleWarnings(player)
   ].join("\n");
 
   const system = [
-    "AVALON_AGENT_V2.",
-    "Choose one legal action from LA; rules engine validates.",
-    "Public speech only: no role, allegiance, private info, quest card, or hidden reasoning as certainty.",
-    "Return JSON only: {\"speech\":\"short table talk\",\"action\":{...}}."
+    "AVALON_AGENT_V3.",
+    "Pick one legal LA; engine validates.",
+    "Public speech: never state hidden role/side/private cards/reasoning as certainty.",
+    "JSON only; prefer short keys."
   ].join(" ");
 
   const user = [
-    `LANG=${input.language === "zh" ? "zh-CN" : "en"}.`,
-    `Current decision type: ${input.actionKind}.`,
-    `Thinking strength: ${input.reasoningEffort}. ${reasoningInstruction(input.reasoningEffort)}`,
-    `Persona: caution=${input.persona.caution.toFixed(2)}, aggression=${input.persona.aggression.toFixed(2)}, talkativeness=${input.persona.talkativeness.toFixed(2)}, trustBias=${input.persona.trustBias.toFixed(2)}, deceptionComfort=${input.persona.deceptionComfort.toFixed(2)}.`,
-    "",
-    "Private information:",
+    `L=${input.language === "zh" ? "zh-CN" : "en"} A=${input.actionKind} R=${input.reasoningEffort}:${reasoningInstruction(input.reasoningEffort)}`,
+    `PER c=${formatPersona(input.persona.caution)} ag=${formatPersona(input.persona.aggression)} talk=${formatPersona(input.persona.talkativeness)} trust=${formatPersona(input.persona.trustBias)} dec=${formatPersona(input.persona.deceptionComfort)}`,
     privateState,
-    "",
-    "Public game state:",
     publicState,
-    "",
-    "Public table talk:",
     summarizeTableTalk(input.tableTalk ?? []),
-    "",
-    "Role strategy:",
-    roleStrategy(player),
-    "",
+    `STR ${roleStrategy(player)}`,
     summarizeLegalActions(input.legalActions),
-    "",
-    "Return only JSON. Do not use markdown."
+    outputContract(input.actionKind)
   ].join("\n");
 
   return { messages: [{ role: "system", content: system }, { role: "user", content: user }] };
@@ -124,18 +123,21 @@ export function extractJsonObject(raw: string): string | null {
 export function parseAiDecision(raw: string, legalActions: LegalAction[], fallback: AiDecision): AiDecisionResult {
   const json = extractJsonObject(raw);
   if (!json) {
-    return { ...fallback, source: "fallback" };
+    return fallbackDecision(fallback, "invalid-json");
   }
 
   try {
-    const parsed = decisionSchema.parse(JSON.parse(json));
+    const parsed = normalizeAiDecision(JSON.parse(json));
+    if (!parsed) {
+      return fallbackDecision(fallback, "invalid-json");
+    }
     if (!legalActions.some((action) => sameAction(action, parsed.action))) {
-      return { ...fallback, source: "fallback" };
+      return fallbackDecision(fallback, "illegal-action");
     }
 
     return { speech: parsed.speech, action: parsed.action, source: "model" };
   } catch {
-    return { ...fallback, source: "fallback" };
+    return fallbackDecision(fallback, "invalid-json");
   }
 }
 
@@ -168,53 +170,87 @@ function sameTeam(left: string[], right: string[]): boolean {
   return left.every((id) => rightIds.has(id));
 }
 
+function fallbackDecision(fallback: AiDecision, fallbackReason: AiFallbackReason): AiDecisionResult {
+  return { ...fallback, source: "fallback", fallbackReason };
+}
+
+function normalizeAiDecision(value: unknown): AiDecision | null {
+  const canonical = decisionSchema.safeParse(value);
+  if (canonical.success) {
+    return canonical.data;
+  }
+
+  const compact = compactDecisionSchema.safeParse(value);
+  if (!compact.success) {
+    return null;
+  }
+
+  return {
+    speech: compact.data.s,
+    action: normalizeCompactAction(compact.data.a)
+  };
+}
+
+function normalizeCompactAction(action: z.infer<typeof compactActionSchema>): LegalAction {
+  if (action.t === "pt") {
+    return { type: "proposeTeam", teamIds: action.ids };
+  }
+  if (action.t === "v") {
+    return { type: "vote", approve: action.ok };
+  }
+  if (action.t === "q") {
+    return { type: "quest", card: action.c };
+  }
+  return { type: "assassinate", targetId: action.id };
+}
+
 function summarizePublicState(state: GameState): string {
-  const players = state.players.map((player) => `${player.id}(seat ${player.seat + 1})${player.isHuman ? " human" : " AI"}`).join(", ");
+  const players = state.players.map((player) => `${player.id}@${player.seat + 1}${player.isHuman ? "H" : "A"}`).join(",");
   const quests = state.questResults.length
-    ? state.questResults.map((quest, index) => `Q${index + 1}: team ${quest.teamIds.join("+")}, ${quest.failCards} fail, ${quest.succeeded ? "success" : "fail"}`).join("; ")
-    : "none";
-  const proposal = state.proposal ? `${state.proposal.leaderId} proposed ${state.proposal.teamIds.join(", ")}` : "none";
+    ? state.questResults.map((quest, index) => `Q${index + 1}:${quest.teamIds.join("+")}:${quest.failCards}F:${quest.succeeded ? "S" : "F"}`).join(";")
+    : "-";
+  const proposal = state.proposal ? `${state.proposal.leaderId}>${state.proposal.teamIds.join("+")}` : "-";
   const votes = summarizeVotes(state);
   const questCards = summarizeQuestCardSubmissions(state);
 
   return [
-    `Players: ${players}.`,
-    `Phase: ${state.phase}. Quest number: ${state.questIndex + 1}. Failed proposal counter: ${state.failedVotes}.`,
-    `Leader: ${state.players[state.leaderIndex]?.id ?? "unknown"}. Current proposal: ${proposal}.`,
-    `Votes: ${votes}.`,
-    `Quest cards: ${questCards}. Quest history: ${quests}.`
+    `S ph=${state.phase} q=${state.questIndex + 1} fv=${state.failedVotes} lead=${state.players[state.leaderIndex]?.id ?? "?"} prop=${proposal}`,
+    `P=${players}`,
+    votes,
+    questCards,
+    `H=${quests}`
   ].join("\n");
 }
 
 function summarizeVotes(state: GameState): string {
   const submitted = Object.keys(state.votes).length;
   if (state.phase === "voting" && submitted < state.playerCount) {
-    return `Vote submissions: ${submitted} of ${state.playerCount} submitted; individual votes are hidden until all players have voted`;
+    return `V=${submitted}/${state.playerCount}:hidden`;
   }
   if (!submitted) {
-    return "none";
+    return "V=-";
   }
 
-  return `Revealed votes: ${Object.entries(state.votes).map(([id, vote]) => `${id}:${vote}`).join(", ")}`;
+  return `V=${Object.entries(state.votes).map(([id, vote]) => `${id}:${vote ? "A" : "R"}`).join(",")}`;
 }
 
 function summarizeQuestCardSubmissions(state: GameState): string {
   const submitted = Object.keys(state.questCards).length;
   if (state.phase === "quest" && state.proposal) {
-    return `Quest card submissions: ${submitted} of ${state.proposal.teamIds.length} submitted; individual quest cards are hidden`;
+    return `QC=${submitted}/${state.proposal.teamIds.length}:hidden`;
   }
-  return "individual quest cards are hidden; only resolved fail-card counts are public";
+  return "QC=hidden;resolved_counts_only";
 }
 
 function summarizeTableTalk(tableTalk: PublicTalkEntry[]): string {
   if (!tableTalk.length) {
-    return "none";
+    return "TT -";
   }
 
   const recentTalk = tableTalk.slice(-12);
   return [
-    "Chronological public talk; newest entry is last.",
-    ...recentTalk.map((entry, index) => `${index + 1}. ${entry.speakerId} ${entry.speakerName}: ${entry.text}`)
+    "TT oldest>newest",
+    ...recentTalk.map((entry, index) => `${index + 1}|${entry.speakerId}|${entry.speakerName}|${entry.text}`)
   ].join("\n");
 }
 
@@ -225,18 +261,39 @@ function summarizeLegalActions(legalActions: LegalAction[]): string {
   }
   if (first.type === "proposeTeam") {
     const ids = [...new Set(legalActions.flatMap((action) => action.type === "proposeTeam" ? action.teamIds : []))].sort(comparePlayerIds);
-    return `LA proposeTeam size=${first.teamIds.length} ids=${ids.join(",")}`;
+    return `LA pt n=${first.teamIds.length} ids=${ids.join(",")}`;
   }
   if (first.type === "vote") {
-    return `LA vote approve=${legalActions.some((action) => action.type === "vote" && action.approve)} reject=${legalActions.some((action) => action.type === "vote" && !action.approve)}`;
+    return `LA v ok=${legalActions.some((action) => action.type === "vote" && action.approve) ? 1 : 0} no=${legalActions.some((action) => action.type === "vote" && !action.approve) ? 1 : 0}`;
   }
   if (first.type === "quest") {
     const cards = legalActions.flatMap((action) => action.type === "quest" ? [action.card] : []);
-    return `LA quest cards=${[...new Set(cards)].join("|")}`;
+    return `LA q c=${[...new Set(cards)].join("|")}`;
   }
 
   const targets = legalActions.flatMap((action) => action.type === "assassinate" ? [action.targetId] : []).sort(comparePlayerIds);
-  return `LA assassinate targets=${targets.join(",")}`;
+  return `LA as ids=${targets.join(",")}`;
+}
+
+function outputContract(actionKind: AiActionKind): string {
+  if (actionKind === "proposeTeam") {
+    return "OUT {\"s\":\"<=160 public\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}}; ids from LA, exact n";
+  }
+  if (actionKind === "vote") {
+    return "OUT {\"s\":\"<=160 public\",\"a\":{\"t\":\"v\",\"ok\":true}}; use false to reject";
+  }
+  if (actionKind === "quest") {
+    return "OUT {\"s\":\"<=120 public\",\"a\":{\"t\":\"q\",\"c\":\"success\"}}; fail only if LA";
+  }
+  return "OUT {\"s\":\"<=160 public\",\"a\":{\"t\":\"as\",\"id\":\"pX\"}}; id from LA";
+}
+
+function compactList(ids: string[]): string {
+  return ids.length ? ids.join(",") : "-";
+}
+
+function formatPersona(value: number): string {
+  return value.toFixed(2);
 }
 
 function comparePlayerIds(left: string, right: string): number {
@@ -281,13 +338,13 @@ function roleStrategy(player: Player): string {
 
 function reasoningInstruction(effort: ReasoningEffort): string {
   if (effort === "high") {
-    return "Before answering, consider quest history, vote incentives, role cover, and how your public speech affects Merlin hunting.";
+    return "full:history+votes+cover+Merlin-risk";
   }
   if (effort === "medium") {
-    return "Consider recent proposals, votes, and quest outcomes before choosing.";
+    return "med:proposal+votes+quests";
   }
 
-  return "Use a concise heuristic and avoid over-explaining.";
+  return "fast:heuristic";
 }
 
 function requirePlayer(state: GameState, playerId: string): Player {
