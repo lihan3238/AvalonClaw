@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+node_modules/
+dist/
+coverage/
+.vite/
+*.log
+*.tsbuildinfo
+docs/research/extracted/
+.playwright-mcp/
+avalon-claw-*.png
