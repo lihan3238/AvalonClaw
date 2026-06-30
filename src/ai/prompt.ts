@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getRoleKnowledge, ROLE_DEFINITIONS } from "../game/rules";
 import type { GameState, Player } from "../game/types";
-import type { AiActionKind, AiDecision, AiDecisionResult, AiFallbackReason, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
+import type { AiActionKind, AiDecision, AiDecisionResult, AiFallbackReason, AiSpeechRepairReason, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
 
 interface BuildPromptInput {
   state: GameState;
@@ -63,6 +63,7 @@ export function buildAIPrompt(input: BuildPromptInput): { messages: ChatMessage[
     "AVALON_AGENT_V3.",
     "Pick one legal LA; engine validates.",
     "Public speech: never state hidden role/side/private cards/reasoning as certainty.",
+    "No public role words; say behavior, timing, team pressure.",
     "JSON only; prefer short keys."
   ].join(" ");
 
@@ -135,7 +136,13 @@ export function parseAiDecision(raw: string, legalActions: LegalAction[], fallba
       return fallbackDecision(fallback, "illegal-action");
     }
 
-    return { speech: parsed.speech, action: parsed.action, source: "model" };
+    const repaired = repairPublicSpeech(parsed.speech, parsed.action, fallback);
+    return {
+      speech: repaired.speech,
+      action: parsed.action,
+      source: "model",
+      ...(repaired.reason ? { speechRepairReason: repaired.reason } : {})
+    };
   } catch {
     return fallbackDecision(fallback, "invalid-json");
   }
@@ -172,6 +179,76 @@ function sameTeam(left: string[], right: string[]): boolean {
 
 function fallbackDecision(fallback: AiDecision, fallbackReason: AiFallbackReason): AiDecisionResult {
   return { ...fallback, source: "fallback", fallbackReason };
+}
+
+function repairPublicSpeech(speech: string, action: LegalAction, fallback: AiDecision): { speech: string; reason?: AiSpeechRepairReason } {
+  const trimmed = speech.trim();
+  if (action.type === "quest") {
+    return { speech: safeSpeechForAction(action, fallback), reason: "quest-card-speech" };
+  }
+  if (hasUnsafePublicRoleWord(trimmed)) {
+    return { speech: safeSpeechForAction(action, fallback), reason: "unsafe-role-word" };
+  }
+  if (isSchemaEcho(trimmed)) {
+    return { speech: safeSpeechForAction(action, fallback), reason: "schema-echo" };
+  }
+  if (isLowInformationSpeech(trimmed)) {
+    return { speech: safeSpeechForAction(action, fallback), reason: "low-information" };
+  }
+  if (contradictsVoteAction(trimmed, action)) {
+    return { speech: safeSpeechForAction(action, fallback), reason: "action-mismatch" };
+  }
+
+  return { speech: trimmed };
+}
+
+function hasUnsafePublicRoleWord(speech: string): boolean {
+  return /\b(merlin|assassin|morgana|mordred|oberon|percival|minions?|loyal servant|magic)\b/iu.test(speech);
+}
+
+function isSchemaEcho(speech: string): boolean {
+  return /<=\s*\d+\s*(?:chars?\s*)?public/iu.test(speech)
+    || /\b(true\|false|success\|fail|pX)\b/u.test(speech);
+}
+
+function isLowInformationSpeech(speech: string): boolean {
+  const normalized = speech.toLowerCase().replace(/\s+/gu, " ").trim();
+  return normalized.length < 8
+    || normalized === "vote yes"
+    || normalized === "vote no"
+    || normalized === "approve"
+    || normalized === "reject"
+    || /^(?:p\d+\s*[,;+ ]\s*)+p\d+$/iu.test(normalized);
+}
+
+function contradictsVoteAction(speech: string, action: LegalAction): boolean {
+  if (action.type !== "vote") {
+    return false;
+  }
+
+  const normalized = speech.toLowerCase();
+  if (action.approve) {
+    return /\b(reject(?:ing)?|avoid|prefer (?:a )?cleaner|rather (?:see|get|have) (?:a )?cleaner|before (?:greenlighting|backing)|do not like|don't like)\b/iu.test(normalized);
+  }
+
+  return /\b(approv(?:e|ing)|acceptable|looks reasonable|fine with|greenlight|backing this|voting yes)\b/iu.test(normalized);
+}
+
+function safeSpeechForAction(action: LegalAction, fallback: AiDecision): string {
+  if (sameAction(action, fallback.action)) {
+    return fallback.speech;
+  }
+  if (action.type === "proposeTeam") {
+    return `I am proposing ${action.teamIds.join("+")} as a readable test.`;
+  }
+  if (action.type === "vote") {
+    return action.approve ? "This team is acceptable for now." : "I want a cleaner proposal before approving.";
+  }
+  if (action.type === "quest") {
+    return "I am resolving the quest.";
+  }
+
+  return "I think this player showed the clearest hidden guidance.";
 }
 
 function normalizeAiDecision(value: unknown): AiDecision | null {

@@ -187,6 +187,7 @@ describe("AI prompt token budget", () => {
     expect(prompt).not.toContain("Private information:");
     expect(prompt).not.toContain("Public game state:");
     expect(prompt).not.toContain("Role strategy:");
+    expect(prompt).toContain("No public role words");
     expect(prompt).toContain("OUT ");
     expect(prompt.length).toBeLessThan(1800);
   });
@@ -235,12 +236,99 @@ describe("AI response parsing", () => {
     expect(parseAiDecision('{"s":"Resolving.","a":{"t":"q","c":"success"}}', [{ type: "quest", card: "success" }], {
       speech: "Fallback",
       action: { type: "quest", card: "success" }
-    })).toEqual({ speech: "Resolving.", action: { type: "quest", card: "success" }, source: "model" });
+    })).toEqual({ speech: "Fallback", action: { type: "quest", card: "success" }, source: "model", speechRepairReason: "quest-card-speech" });
 
     expect(parseAiDecision('{"s":"Targeting.","a":{"t":"as","id":"p3"}}', [{ type: "assassinate", targetId: "p3" }], {
       speech: "Fallback",
       action: { type: "assassinate", targetId: "p2" }
     })).toEqual({ speech: "Targeting.", action: { type: "assassinate", targetId: "p3" }, source: "model" });
+  });
+
+  it("repairs unsafe or low-quality public speech while keeping legal model actions", () => {
+    const fallback = { speech: "Safe fallback speech.", action: { type: "vote" as const, approve: false } };
+
+    expect(parseAiDecision('{"s":"p1 and p4 both still read as plausible Merlin material.","a":{"t":"v","ok":true}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "unsafe-role-word"
+    });
+    expect(parseAiDecision('{"s":"<=160 public","a":{"t":"pt","ids":["p1","p2","p3"]}}', [{ type: "proposeTeam", teamIds: ["p1", "p2", "p3"] }], {
+      speech: "Safe proposal speech.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2", "p3"] }
+    })).toEqual({
+      speech: "Safe proposal speech.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2", "p3"] },
+      source: "model",
+      speechRepairReason: "schema-echo"
+    });
+    expect(parseAiDecision('{"s":"v","a":{"t":"v","ok":true}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "low-information"
+    });
+    expect(parseAiDecision('{"s":"p1,p2,p3","a":{"t":"pt","ids":["p1","p2","p3"]}}', [{ type: "proposeTeam", teamIds: ["p1", "p2", "p3"] }], {
+      speech: "Safe proposal speech.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2", "p3"] }
+    })).toEqual({
+      speech: "Safe proposal speech.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2", "p3"] },
+      source: "model",
+      speechRepairReason: "low-information"
+    });
+  });
+
+  it("repairs public speech that contradicts the chosen vote action", () => {
+    const fallback = { speech: "I want a cleaner proposal before approving.", action: { type: "vote" as const, approve: false } };
+
+    expect(parseAiDecision('{"s":"That lineup looks risky; I would avoid p3 here and prefer a cleaner mix.","a":{"t":"v","ok":true}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "action-mismatch"
+    });
+    expect(parseAiDecision('{"s":"I would rather see more consistency before greenlighting this one.","a":{"t":"v","ok":true}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "action-mismatch"
+    });
+    expect(parseAiDecision('{"s":"Looks reasonable; voting yes.","a":{"t":"v","ok":false}}', legalVotes, {
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true }
+    })).toEqual({
+      speech: "I want a cleaner proposal before approving.",
+      action: { type: "vote", approve: false },
+      source: "model",
+      speechRepairReason: "action-mismatch"
+    });
+  });
+
+  it("repairs quest-phase speech so secret quest cards are never implied publicly", () => {
+    expect(parseAiDecision('{"s":"Lean into the pattern; I am taking the disruptive line here.","a":{"t":"q","c":"fail"}}', [
+      { type: "quest", card: "success" },
+      { type: "quest", card: "fail" }
+    ], {
+      speech: "Fallback quest speech.",
+      action: { type: "quest", card: "success" }
+    })).toEqual({
+      speech: "I am resolving the quest.",
+      action: { type: "quest", card: "fail" },
+      source: "model",
+      speechRepairReason: "quest-card-speech"
+    });
+    expect(parseAiDecision('{"s":"I am playing clean for the team.","a":{"t":"q","c":"success"}}', [
+      { type: "quest", card: "success" }
+    ], {
+      speech: "Fallback quest speech.",
+      action: { type: "quest", card: "success" }
+    })).toEqual({
+      speech: "Fallback quest speech.",
+      action: { type: "quest", card: "success" },
+      source: "model",
+      speechRepairReason: "quest-card-speech"
+    });
   });
 
   it("falls back when JSON is malformed or the action is illegal", () => {

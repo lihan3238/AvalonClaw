@@ -43,7 +43,10 @@ export type AiFallbackReason =
   | "client-illegal-action"
   | "network-error";
 
+export type AiSpeechRepairReason = "unsafe-role-word" | "schema-echo" | "low-information" | "action-mismatch" | "quest-card-speech";
+
 export interface AiDecisionResult extends AiDecision {
   source: "model" | "fallback";
   fallbackReason?: AiFallbackReason;
+  speechRepairReason?: AiSpeechRepairReason;
 }
