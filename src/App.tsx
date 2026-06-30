@@ -104,7 +104,8 @@ const copy = {
     rejected: "reject",
     submitted: "submitted a quest card",
     assassinated: "chose Merlin target",
-    fallback: "fallback",
+    fallback: "local fallback",
+    fallbackNotice: "returned no usable action; local fallback took over.",
     wins: "wins"
   },
   zh: {
@@ -185,7 +186,8 @@ const copy = {
     rejected: "拒绝",
     submitted: "提交了任务牌",
     assassinated: "选择刺杀目标",
-    fallback: "fallback",
+    fallback: "本地兜底",
+    fallbackNotice: "没有给出可用行动，已使用本地兜底。",
     wins: "获胜"
   }
 } satisfies Record<TableLanguage, Record<string, string>>;
@@ -238,6 +240,7 @@ export default function App() {
   const phaseKey = game ? getPhaseKey(game) : "setup";
   const countdownSeconds = game && game.phase !== "gameOver" ? Math.max(0, Math.ceil((phaseDeadline - clockNow) / 1000)) : null;
   const pendingAiPlayer = game && pendingAi ? getPendingAiPlayer(game, pendingAi) : null;
+  const highlightedTeam = game?.phase === "proposal" && leader?.isHuman ? selectedTeam : game?.proposal?.teamIds ?? [];
 
   useEffect(() => {
     persistTheme(theme);
@@ -302,6 +305,9 @@ export default function App() {
       }
       try {
         const nextGame = applyDecision(current, next.playerId, decision.action);
+        if (decision.source === "fallback") {
+          appendLog(`${playerName(current, next.playerId)} ${copy[language].fallbackNotice}`, "warning");
+        }
         appendTableTalk(
           next.playerId,
           playerName(current, next.playerId),
@@ -473,10 +479,10 @@ export default function App() {
       return null;
     }
     const knownEvil = humanKnowledge.knownEvilIds.length
-      ? humanKnowledge.knownEvilIds.map((id) => describeKnownPlayer(game, id, true, language))
+      ? humanKnowledge.knownEvilIds.map((id) => describeKnownPlayer(game, id, knownEvilLabel(human, language)))
       : [copy[language].none];
     const merlinCandidates = humanKnowledge.merlinCandidateIds.length
-      ? humanKnowledge.merlinCandidateIds.map((id) => describeKnownPlayer(game, id, false, language))
+      ? humanKnowledge.merlinCandidateIds.map((id) => describeKnownPlayer(game, id, language === "zh" ? "Merlin/Morgana 候选" : "Merlin/Morgana candidate"))
       : [copy[language].none];
     return [
       `${copy[language].knownEvil}:`,
@@ -626,7 +632,7 @@ export default function App() {
                   <button
                     type="button"
                     key={player.id}
-                    className={`player-seat ${player.isHuman ? "human" : ""} ${leader?.id === player.id ? "leader" : ""} ${selectedTeam.includes(player.id) ? "selected" : ""} ${playerToneClass(player)}`}
+                    className={`player-seat ${player.isHuman ? "human" : ""} ${leader?.id === player.id ? "leader" : ""} ${highlightedTeam.includes(player.id) ? "selected" : ""} ${playerToneClass(player)}`}
                     onClick={() => game.phase === "proposal" && leader?.isHuman ? toggleTeam(player.id) : undefined}
                   >
                     <span><b>{player.id}</b> {player.name} {leader?.id === player.id && <em>{copy[language].leaderMarker}</em>}</span>
@@ -937,15 +943,19 @@ function roleSkillText(player: Player, language: TableLanguage): string {
   return "You have no private role power. Read proposals, votes, teams, and quest outcomes.";
 }
 
-function describeKnownPlayer(game: GameState, playerId: string, revealRole: boolean, language: TableLanguage): string {
+function knownEvilLabel(human: Player, language: TableLanguage): string {
+  if (language === "zh") {
+    return human.allegiance === "evil" ? "邪恶同伴" : "已知邪恶";
+  }
+  return human.allegiance === "evil" ? "evil teammate" : "known evil";
+}
+
+function describeKnownPlayer(game: GameState, playerId: string, detail: string): string {
   const player = game.players.find((candidate) => candidate.id === playerId);
   if (!player) {
     return playerId;
   }
-  const suffix = revealRole
-    ? ROLE_DEFINITIONS[player.role].label
-    : language === "zh" ? "Merlin/Morgana 候选" : "Merlin/Morgana candidate";
-  return `${player.id} · ${player.name} · ${suffix}`;
+  return `${player.id} · ${player.name} · ${detail}`;
 }
 
 function playerToneClass(player: Player): string {
@@ -965,10 +975,8 @@ function playerName(game: GameState, playerId: string): string {
 function describePublicActionEvents(previous: GameState, next: GameState, playerId: string, action: LegalAction, language: TableLanguage): PublicLogEvent[] {
   const labels = copy[language];
   const actor = playerName(previous, playerId);
-  const actorTone = previous.players.find((player) => player.id === playerId)?.allegiance ?? "system";
-
   if (action.type === "proposeTeam") {
-    return [{ text: `${actor} ${labels.proposed}: ${action.teamIds.join(", ")}.`, tone: actorTone }];
+    return [{ text: `${actor} ${labels.proposed}: ${action.teamIds.join(", ")}.`, tone: "ai" }];
   }
 
   if (action.type === "vote") {

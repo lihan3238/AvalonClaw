@@ -162,4 +162,14 @@ describe("quest and assassination resolution", () => {
     expect(assassinateMerlin(game, "p4", "p2")).toMatchObject({ phase: "gameOver", winner: "good" });
     expect(assassinateMerlin(game, "p4", "p1")).toMatchObject({ phase: "gameOver", winner: "evil", winReason: "assassination" });
   });
+
+  it("does not let the Assassin target themself", () => {
+    const game = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"],
+      phase: "assassination"
+    });
+
+    expect(() => assassinateMerlin(game, "p4", "p4")).toThrow(/cannot target themself/i);
+  });
 });

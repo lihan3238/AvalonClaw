@@ -12,11 +12,11 @@ export function chooseFallbackDecision(state: GameState, playerId: string, actio
     const teamSize = getQuestConfig(state.playerCount)[state.questIndex].teamSize;
     const knowledge = getRoleKnowledge(state, playerId);
     const avoided = new Set(player.allegiance === "good" ? knowledge.knownEvilIds : []);
-    const preferred = state.players
-      .map((candidate) => candidate.id)
-      .filter((id) => id === playerId || !avoided.has(id));
-    const fallback = state.players.map((candidate) => candidate.id).filter((id) => !preferred.includes(id));
-    const teamIds = [playerId, ...preferred.filter((id) => id !== playerId), ...fallback].slice(0, teamSize);
+    const candidates = state.players
+      .filter((candidate) => candidate.id !== playerId)
+      .sort((left, right) => proposalScore(state, right.id, avoided) - proposalScore(state, left.id, avoided) || left.seat - right.seat)
+      .map((candidate) => candidate.id);
+    const teamIds = [playerId, ...candidates].slice(0, teamSize);
     return {
       speech: language === "zh" ? "我先提一个清晰、容易检验的队伍。" : "I will keep this team straightforward and readable.",
       action: { type: "proposeTeam", teamIds }
@@ -44,7 +44,7 @@ export function chooseFallbackDecision(state: GameState, playerId: string, actio
     };
   }
 
-  const target = state.players.find((candidate) => candidate.allegiance === "good") ?? state.players[0];
+  const target = chooseAssassinationTarget(state, playerId);
   return {
     speech: language === "zh" ? "我认为这个人最像在暗中带队。" : "I think this player had the clearest hidden guidance.",
     action: { type: "assassinate", targetId: target.id }
@@ -66,4 +66,42 @@ function chooseQuestCard(state: GameState, playerId: string): "success" | "fail"
   }
 
   return "fail";
+}
+
+function proposalScore(state: GameState, playerId: string, avoided: Set<string>): number {
+  if (avoided.has(playerId)) {
+    return -100;
+  }
+
+  return state.questResults.reduce((score, quest) => {
+    if (!quest.teamIds.includes(playerId)) {
+      return score;
+    }
+    return score + (quest.succeeded ? 2 : -3);
+  }, 0);
+}
+
+function chooseAssassinationTarget(state: GameState, assassinId: string) {
+  const knowledge = getRoleKnowledge(state, assassinId);
+  const knownEvil = new Set(knowledge.knownEvilIds);
+  const legalTargets = state.players.filter((candidate) => candidate.id !== assassinId);
+  const candidates = legalTargets.filter((candidate) => !knownEvil.has(candidate.id));
+  const targetPool = candidates.length ? candidates : legalTargets;
+
+  return [...targetPool].sort((left, right) => {
+    const scoreDelta = publicMerlinLikelihood(state, right.id) - publicMerlinLikelihood(state, left.id);
+    if (scoreDelta !== 0) {
+      return scoreDelta;
+    }
+    return left.seat - right.seat;
+  })[0];
+}
+
+function publicMerlinLikelihood(state: GameState, playerId: string): number {
+  return state.questResults.reduce((score, quest) => {
+    if (!quest.teamIds.includes(playerId)) {
+      return score;
+    }
+    return score + (quest.succeeded ? 2 : -1);
+  }, 0);
 }

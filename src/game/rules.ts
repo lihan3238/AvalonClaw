@@ -243,6 +243,9 @@ export function assassinateMerlin(state: GameState, assassinId: string, targetId
   if (assassin.role !== "assassin") {
     throw new Error("Only the Assassin can choose the Merlin target");
   }
+  if (assassin.id === target.id) {
+    throw new Error("The Assassin cannot target themself");
+  }
 
   return {
     ...cloneState(state),

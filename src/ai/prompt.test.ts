@@ -103,6 +103,93 @@ describe("AI prompt public vote information", () => {
   });
 });
 
+describe("AI prompt public talk order", () => {
+  it("labels table talk in chronological order so agents can reason about timing", () => {
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"]
+    });
+
+    const prompt = buildAIPrompt({
+      state,
+      playerId: "p3",
+      actionKind: "vote",
+      legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+      tableTalk: [
+        { id: 1, speakerId: "p1", speakerName: "AI 1", text: "I trust p2 first." },
+        { id: 2, speakerId: "p2", speakerName: "AI 2", text: "That trust came too early." }
+      ],
+      persona: createPersona("p3", 5),
+      reasoningEffort: "medium"
+    }).messages.map((message) => message.content).join("\n");
+
+    expect(prompt).toContain("Chronological public talk; newest entry is last");
+    expect(prompt).toContain("1. p1 AI 1: I trust p2 first.");
+    expect(prompt).toContain("2. p2 AI 2: That trust came too early.");
+  });
+});
+
+describe("AI prompt token budget", () => {
+  it("keeps the system prompt stable so repeated calls can share a cacheable prefix", () => {
+    const first = buildAIPrompt({
+      state: createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] }),
+      playerId: "p1",
+      actionKind: "vote",
+      legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+      persona: createPersona("p1", 5),
+      reasoningEffort: "low",
+      language: "en"
+    }).messages[0].content;
+    const second = buildAIPrompt({
+      state: createInitialGame({ playerCount: 7, roles: ["merlin", "percival", "loyal", "loyal", "assassin", "morgana", "mordred"] }),
+      playerId: "p2",
+      actionKind: "quest",
+      legalActions: [{ type: "quest", card: "success" }],
+      persona: createPersona("p2", 7),
+      reasoningEffort: "high",
+      language: "zh"
+    }).messages[0].content;
+
+    expect(first).toBe(second);
+    expect(first.length).toBeLessThan(360);
+  });
+
+  it("summarizes proposal legality without enumerating every team combination", () => {
+    const state = createInitialGame({
+      playerCount: 10,
+      roles: ["merlin", "percival", "loyal", "loyal", "loyal", "loyal", "assassin", "morgana", "mordred", "oberon"],
+      questIndex: 4
+    });
+    const legalActions: LegalAction[] = [];
+    const ids = state.players.map((player) => player.id);
+    for (let a = 0; a < ids.length; a += 1) {
+      for (let b = a + 1; b < ids.length; b += 1) {
+        for (let c = b + 1; c < ids.length; c += 1) {
+          for (let d = c + 1; d < ids.length; d += 1) {
+            for (let e = d + 1; e < ids.length; e += 1) {
+              legalActions.push({ type: "proposeTeam", teamIds: [ids[a], ids[b], ids[c], ids[d], ids[e]] });
+            }
+          }
+        }
+      }
+    }
+
+    const prompt = buildAIPrompt({
+      state,
+      playerId: "p1",
+      actionKind: "proposeTeam",
+      legalActions,
+      persona: createPersona("p1", 10),
+      reasoningEffort: "low"
+    }).messages.map((message) => message.content).join("\n");
+
+    expect(legalActions).toHaveLength(252);
+    expect(prompt).toContain("LA proposeTeam size=5 ids=p1,p2,p3,p4,p5,p6,p7,p8,p9,p10");
+    expect(prompt).not.toContain(JSON.stringify(legalActions));
+    expect(prompt.length).toBeLessThan(2600);
+  });
+});
+
 describe("AI response parsing", () => {
   const legalVotes: LegalAction[] = [{ type: "vote", approve: true }, { type: "vote", approve: false }];
 
@@ -119,6 +206,17 @@ describe("AI response parsing", () => {
     });
 
     expect(decision).toEqual({ speech: "Approve this team.", action: { type: "vote", approve: true }, source: "model" });
+  });
+
+  it("accepts proposal teams regardless of player id order", () => {
+    const legalTeams: LegalAction[] = [{ type: "proposeTeam", teamIds: ["p1", "p2"] }];
+    const fallback = { speech: "Fallback", action: { type: "proposeTeam" as const, teamIds: ["p1", "p2"] } };
+
+    expect(parseAiDecision('{"speech":"Same team, reversed.","action":{"type":"proposeTeam","teamIds":["p2","p1"]}}', legalTeams, fallback)).toEqual({
+      speech: "Same team, reversed.",
+      action: { type: "proposeTeam", teamIds: ["p2", "p1"] },
+      source: "model"
+    });
   });
 
   it("falls back when JSON is malformed or the action is illegal", () => {

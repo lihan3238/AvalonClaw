@@ -49,15 +49,14 @@ export function buildAIPrompt(input: BuildPromptInput): { messages: ChatMessage[
   ].join("\n");
 
   const system = [
-    "You are an AI player in The Resistance: Avalon.",
-    "You must obey the game rules and copy exactly one action object from the provided legalActions JSON.",
-    "Your speech is public table talk: never reveal your role, allegiance, private knowledge, quest card, or hidden reasoning as certainty unless public evidence alone supports it.",
-    input.language === "zh" ? "Write your speech in Simplified Chinese." : "Write your speech in English.",
-    "Speak briefly as a table player, then output only a JSON object with keys speech and action.",
-    "Valid JSON shape: {\"speech\":\"short public statement\",\"action\": legalAction}."
+    "AVALON_AGENT_V2.",
+    "Choose one legal action from LA; rules engine validates.",
+    "Public speech only: no role, allegiance, private info, quest card, or hidden reasoning as certainty.",
+    "Return JSON only: {\"speech\":\"short table talk\",\"action\":{...}}."
   ].join(" ");
 
   const user = [
+    `LANG=${input.language === "zh" ? "zh-CN" : "en"}.`,
     `Current decision type: ${input.actionKind}.`,
     `Thinking strength: ${input.reasoningEffort}. ${reasoningInstruction(input.reasoningEffort)}`,
     `Persona: caution=${input.persona.caution.toFixed(2)}, aggression=${input.persona.aggression.toFixed(2)}, talkativeness=${input.persona.talkativeness.toFixed(2)}, trustBias=${input.persona.trustBias.toFixed(2)}, deceptionComfort=${input.persona.deceptionComfort.toFixed(2)}.`,
@@ -74,7 +73,7 @@ export function buildAIPrompt(input: BuildPromptInput): { messages: ChatMessage[
     "Role strategy:",
     roleStrategy(player),
     "",
-    `legalActions: ${JSON.stringify(input.legalActions)}`,
+    summarizeLegalActions(input.legalActions),
     "",
     "Return only JSON. Do not use markdown."
   ].join("\n");
@@ -145,7 +144,7 @@ export function sameAction(left: LegalAction, right: LegalAction): boolean {
     return false;
   }
   if (left.type === "proposeTeam" && right.type === "proposeTeam") {
-    return left.teamIds.length === right.teamIds.length && left.teamIds.every((id, index) => id === right.teamIds[index]);
+    return sameTeam(left.teamIds, right.teamIds);
   }
   if (left.type === "vote" && right.type === "vote") {
     return left.approve === right.approve;
@@ -158,6 +157,15 @@ export function sameAction(left: LegalAction, right: LegalAction): boolean {
   }
 
   return false;
+}
+
+function sameTeam(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const rightIds = new Set(right);
+  return left.every((id) => rightIds.has(id));
 }
 
 function summarizePublicState(state: GameState): string {
@@ -203,7 +211,41 @@ function summarizeTableTalk(tableTalk: PublicTalkEntry[]): string {
     return "none";
   }
 
-  return tableTalk.slice(-12).map((entry) => `${entry.speakerId} ${entry.speakerName}: ${entry.text}`).join("\n");
+  const recentTalk = tableTalk.slice(-12);
+  return [
+    "Chronological public talk; newest entry is last.",
+    ...recentTalk.map((entry, index) => `${index + 1}. ${entry.speakerId} ${entry.speakerName}: ${entry.text}`)
+  ].join("\n");
+}
+
+function summarizeLegalActions(legalActions: LegalAction[]): string {
+  const first = legalActions[0];
+  if (!first) {
+    return "LA none";
+  }
+  if (first.type === "proposeTeam") {
+    const ids = [...new Set(legalActions.flatMap((action) => action.type === "proposeTeam" ? action.teamIds : []))].sort(comparePlayerIds);
+    return `LA proposeTeam size=${first.teamIds.length} ids=${ids.join(",")}`;
+  }
+  if (first.type === "vote") {
+    return `LA vote approve=${legalActions.some((action) => action.type === "vote" && action.approve)} reject=${legalActions.some((action) => action.type === "vote" && !action.approve)}`;
+  }
+  if (first.type === "quest") {
+    const cards = legalActions.flatMap((action) => action.type === "quest" ? [action.card] : []);
+    return `LA quest cards=${[...new Set(cards)].join("|")}`;
+  }
+
+  const targets = legalActions.flatMap((action) => action.type === "assassinate" ? [action.targetId] : []).sort(comparePlayerIds);
+  return `LA assassinate targets=${targets.join(",")}`;
+}
+
+function comparePlayerIds(left: string, right: string): number {
+  return playerIdNumber(left) - playerIdNumber(right);
+}
+
+function playerIdNumber(playerId: string): number {
+  const match = /^p(\d+)$/u.exec(playerId);
+  return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
 }
 
 function roleWarnings(player: Player): string {

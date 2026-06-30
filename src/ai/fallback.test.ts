@@ -30,6 +30,21 @@ describe("AI fallback decisions", () => {
     expect(chooseFallbackDecision(state, "p4", "assassinate").action).toEqual({ type: "assassinate", targetId: "p1" });
   });
 
+  it("assassin fallback uses public quest evidence instead of omniscient role knowledge", () => {
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["morgana", "assassin", "merlin", "loyal", "percival"],
+      phase: "assassination",
+      questResults: [
+        { teamIds: ["p3", "p5"], failCards: 0, succeeded: true },
+        { teamIds: ["p4", "p5", "p1"], failCards: 0, succeeded: true },
+        { teamIds: ["p2", "p5"], failCards: 0, succeeded: true }
+      ]
+    });
+
+    expect(chooseFallbackDecision(state, "p2", "assassinate").action).toEqual({ type: "assassinate", targetId: "p5" });
+  });
+
   it("has Merlin avoid known evil players when proposing a team", () => {
     const state = createInitialGame({
       playerCount: 5,
@@ -38,6 +53,18 @@ describe("AI fallback decisions", () => {
     });
 
     expect(chooseFallbackDecision(state, "p3", "proposeTeam").action).toEqual({ type: "proposeTeam", teamIds: ["p3", "p2"] });
+  });
+
+  it("has good leaders avoid repeating players from failed quests when proposing", () => {
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["morgana", "percival", "loyal", "merlin", "assassin"],
+      leaderIndex: 1,
+      questIndex: 1,
+      questResults: [{ teamIds: ["p1", "p2"], failCards: 1, succeeded: false }]
+    });
+
+    expect(chooseFallbackDecision(state, "p2", "proposeTeam").action).toEqual({ type: "proposeTeam", teamIds: ["p2", "p3", "p4"] });
   });
 
   it("has Merlin reject teams containing known evil players", () => {

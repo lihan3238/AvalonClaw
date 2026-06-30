@@ -122,8 +122,10 @@ describe("Avalon app", () => {
 
     expect(screen.getByText(/职业技能/)).toBeInTheDocument();
     expect(screen.getByText(/你知道除 Mordred 外的邪恶方/)).toBeInTheDocument();
-    expect(screen.getByText(/p3 · AI 3 · Morgana/)).toBeInTheDocument();
-    expect(screen.getByText(/p4 · AI 4 · Assassin/)).toBeInTheDocument();
+    expect(screen.getByText(/p3 · AI 3 · 已知邪恶/)).toBeInTheDocument();
+    expect(screen.getByText(/p4 · AI 4 · 已知邪恶/)).toBeInTheDocument();
+    expect(screen.queryByText(/p3 · AI 3 · Morgana/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/p4 · AI 4 · Assassin/)).not.toBeInTheDocument();
   });
 
   it("lets the human speak and sends public talk to AI decisions", async () => {
@@ -189,6 +191,57 @@ describe("Avalon app", () => {
     expect(screen.getByText(/p4: 拒绝/)).toBeInTheDocument();
   });
 
+  it("uses neutral log styling for public player actions before roles are revealed", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      source: "model",
+      speech: "I prefer this opening pair.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
+    }), { status: 200, headers: { "Content-Type": "application/json" } }))));
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/你的座位/), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: /开始游戏|Start game/i }));
+
+    const proposalLog = await screen.findByText(/AI 1 提议队伍: p1, p2\./);
+    expect(proposalLog).toHaveClass("ai");
+    expect(proposalLog).not.toHaveClass("good");
+    expect(proposalLog).not.toHaveClass("evil");
+  });
+
+  it("highlights the active proposal instead of a stale human draft", async () => {
+    vi.stubGlobal("fetch", vi.fn((_url, init) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (body.actionKind === "vote") {
+        return Promise.resolve(new Response(JSON.stringify({
+          source: "model",
+          speech: "Rejecting to see another leader.",
+          action: { type: "vote", approve: false }
+        }), { status: 200, headers: { "Content-Type": "application/json" } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({
+        source: "model",
+        speech: "I want to test this pair.",
+        action: { type: "proposeTeam", teamIds: ["p3", "p4"] }
+      }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    }));
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/你的座位/), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: /开始游戏|Start game/i }));
+    fireEvent.click(screen.getByRole("button", { name: /AI 2/ }));
+    fireEvent.click(screen.getByRole("button", { name: /提交队伍/ }));
+    fireEvent.click(screen.getByRole("button", { name: /拒绝/ }));
+
+    await waitFor(() => expect(screen.getByText(/投票队伍: p3, p4/)).toBeInTheDocument());
+
+    expect(screen.getByRole("button", { name: /p1.*你/s })).not.toHaveClass("selected");
+    expect(screen.getByRole("button", { name: /p2.*AI 2/s })).not.toHaveClass("selected");
+    expect(screen.getByRole("button", { name: /p3.*AI 3/s })).toHaveClass("selected");
+    expect(screen.getByRole("button", { name: /p4.*AI 4/s })).toHaveClass("selected");
+  });
+
   it("keeps quest cards hidden and only reveals fail-card counts", async () => {
     vi.spyOn(Date, "now").mockReturnValue(10);
     const delayedQuest = pendingResponse();
@@ -241,6 +294,19 @@ describe("Avalon app", () => {
 
     expect(screen.getByText(/流程倒计时/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText(/AI 1 思考中/)).toBeInTheDocument());
+  });
+
+  it("shows a player-friendly warning when an AI action falls back locally", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("network down"))));
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/你的座位/), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: /开始游戏|Start game/i }));
+
+    await waitFor(() => expect(screen.getByText(/AI 1 没有给出可用行动，已使用本地兜底。/)).toBeInTheDocument());
+    expect(screen.getAllByText(/本地兜底/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/AI 1 没有给出可用行动/)[0].closest("p")).toHaveClass("warning");
   });
 
   it("shows one entertaining AI epilogue line for each AI after game over", () => {
