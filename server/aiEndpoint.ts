@@ -4,7 +4,7 @@ import { buildAIPrompt, createPersona, parseAiDecision } from "../src/ai/prompt"
 import type { AiActionKind, AiDecisionResult, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "../src/ai/types";
 import type { GameState } from "../src/game/types";
 import { hasUsableOpenAIConfig, readOpenAIConfigFromEnv, type OpenAICompatibleConfig } from "./env";
-import { callOpenAICompatible } from "./openaiCompatible";
+import { callOpenAICompatible, OpenAICompatibleError } from "./openaiCompatible";
 
 export interface AiActionRequestBody {
   state: GameState;
@@ -57,8 +57,12 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
     });
 
     return parseAiDecision(content, legalActions, fallback);
-  } catch {
-    return { ...fallback, source: "fallback", fallbackReason: "api-error" };
+  } catch (error) {
+    return {
+      ...fallback,
+      source: "fallback",
+      fallbackReason: error instanceof OpenAICompatibleError ? error.fallbackReason : "api-error"
+    };
   }
 }
 

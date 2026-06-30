@@ -85,6 +85,25 @@ describe("AI endpoint orchestration", () => {
       fetchImpl
     });
 
-    expect(result).toMatchObject({ source: "fallback", fallbackReason: "api-error" });
+    expect(result).toMatchObject({ source: "fallback", fallbackReason: "api-http-error" });
+  });
+
+  it("preserves classified API fallback diagnostics", async () => {
+    const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
+    const fetchImpl = vi.fn().mockResolvedValue(new Response("not json", { status: 200 }));
+
+    const result = await createAiActionResult({
+      body: {
+        state,
+        playerId: "p2",
+        actionKind: "vote",
+        legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+        reasoningEffort: "high"
+      },
+      config,
+      fetchImpl
+    });
+
+    expect(result).toMatchObject({ source: "fallback", fallbackReason: "api-invalid-response" });
   });
 });

@@ -38,12 +38,22 @@ export interface AiDecision {
 export type AiFallbackReason =
   | "missing-config"
   | "api-error"
+  | "api-timeout"
+  | "api-http-error"
+  | "api-empty-response"
+  | "api-invalid-response"
   | "invalid-json"
   | "illegal-action"
   | "client-illegal-action"
   | "network-error";
 
-export type AiSpeechRepairReason = "unsafe-role-word" | "schema-echo" | "low-information" | "action-mismatch" | "quest-card-speech";
+export type AiSpeechRepairReason =
+  | "missing-speech"
+  | "unsafe-role-word"
+  | "schema-echo"
+  | "low-information"
+  | "action-mismatch"
+  | "quest-card-speech";
 
 export interface AiDecisionResult extends AiDecision {
   source: "model" | "fallback";

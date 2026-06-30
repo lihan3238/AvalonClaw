@@ -39,4 +39,43 @@ describe("OpenAI-compatible transport", () => {
     expect(firstBody.reasoning_effort).toBe("high");
     expect(secondBody.reasoning_effort).toBeUndefined();
   });
+
+  it("classifies HTTP failures for endpoint diagnostics", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), { status: 503 }));
+
+    await expect(callOpenAICompatible({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "low",
+      fetchImpl
+    })).rejects.toMatchObject({ fallbackReason: "api-http-error" });
+  });
+
+  it("classifies empty and invalid provider response payloads", async () => {
+    await expect(callOpenAICompatible({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "low",
+      fetchImpl: vi.fn().mockResolvedValue(new Response(JSON.stringify({ choices: [{ message: { content: "" } }] }), { status: 200 }))
+    })).rejects.toMatchObject({ fallbackReason: "api-empty-response" });
+
+    await expect(callOpenAICompatible({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "low",
+      fetchImpl: vi.fn().mockResolvedValue(new Response("not json", { status: 200 }))
+    })).rejects.toMatchObject({ fallbackReason: "api-invalid-response" });
+  });
+
+  it("classifies request aborts as timeouts", async () => {
+    const timeoutError = new DOMException("This operation was aborted", "AbortError");
+    const fetchImpl = vi.fn().mockRejectedValue(timeoutError);
+
+    await expect(callOpenAICompatible({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "low",
+      fetchImpl
+    })).rejects.toMatchObject({ fallbackReason: "api-timeout", name: "OpenAICompatibleError" });
+  });
 });

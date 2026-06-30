@@ -68,6 +68,10 @@ function readEndpointFallbackReason(raw: string): AiFallbackReason | null {
 function isAiFallbackReason(value: unknown): value is AiFallbackReason {
   return value === "missing-config"
     || value === "api-error"
+    || value === "api-timeout"
+    || value === "api-http-error"
+    || value === "api-empty-response"
+    || value === "api-invalid-response"
     || value === "invalid-json"
     || value === "illegal-action"
     || value === "client-illegal-action"

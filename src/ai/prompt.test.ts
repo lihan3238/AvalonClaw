@@ -244,6 +244,36 @@ describe("AI response parsing", () => {
     })).toEqual({ speech: "Targeting.", action: { type: "assassinate", targetId: "p3" }, source: "model" });
   });
 
+  it("accepts action-only JSON and repairs missing public speech", () => {
+    expect(parseAiDecision('{"t":"v","ok":true}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: false }
+    })).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "missing-speech"
+    });
+    expect(parseAiDecision('{"type":"vote","approve":false}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: true }
+    })).toEqual({
+      speech: "I want a cleaner proposal before approving.",
+      action: { type: "vote", approve: false },
+      source: "model",
+      speechRepairReason: "missing-speech"
+    });
+    expect(parseAiDecision('{"t":"pt","ids":["p2","p1"]}', [{ type: "proposeTeam", teamIds: ["p1", "p2"] }], {
+      speech: "Fallback",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
+    })).toEqual({
+      speech: "Fallback",
+      action: { type: "proposeTeam", teamIds: ["p2", "p1"] },
+      source: "model",
+      speechRepairReason: "missing-speech"
+    });
+  });
+
   it("repairs unsafe or low-quality public speech while keeping legal model actions", () => {
     const fallback = { speech: "Safe fallback speech.", action: { type: "vote" as const, approve: false } };
 

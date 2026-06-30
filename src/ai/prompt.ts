@@ -136,7 +136,9 @@ export function parseAiDecision(raw: string, legalActions: LegalAction[], fallba
       return fallbackDecision(fallback, "illegal-action");
     }
 
-    const repaired = repairPublicSpeech(parsed.speech, parsed.action, fallback);
+    const repaired = parsed.speech === null
+      ? { speech: safeSpeechForAction(parsed.action, fallback), reason: "missing-speech" as const }
+      : repairPublicSpeech(parsed.speech, parsed.action, fallback);
     return {
       speech: repaired.speech,
       action: parsed.action,
@@ -251,21 +253,27 @@ function safeSpeechForAction(action: LegalAction, fallback: AiDecision): string 
   return "I think this player showed the clearest hidden guidance.";
 }
 
-function normalizeAiDecision(value: unknown): AiDecision | null {
+function normalizeAiDecision(value: unknown): { speech: string | null; action: LegalAction } | null {
   const canonical = decisionSchema.safeParse(value);
   if (canonical.success) {
     return canonical.data;
   }
 
   const compact = compactDecisionSchema.safeParse(value);
-  if (!compact.success) {
-    return null;
+  if (compact.success) {
+    return {
+      speech: compact.data.s,
+      action: normalizeCompactAction(compact.data.a)
+    };
   }
 
-  return {
-    speech: compact.data.s,
-    action: normalizeCompactAction(compact.data.a)
-  };
+  const canonicalAction = actionSchema.safeParse(value);
+  if (canonicalAction.success) {
+    return { speech: null, action: canonicalAction.data };
+  }
+
+  const compactAction = compactActionSchema.safeParse(value);
+  return compactAction.success ? { speech: null, action: normalizeCompactAction(compactAction.data) } : null;
 }
 
 function normalizeCompactAction(action: z.infer<typeof compactActionSchema>): LegalAction {
