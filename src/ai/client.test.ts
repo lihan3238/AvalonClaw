@@ -32,6 +32,7 @@ describe("AI browser client validation", () => {
     expect(result).toEqual({
       source: "fallback",
       fallbackReason: "client-illegal-action",
+      fallbackDetail: "illegal-action",
       speech: "I will keep this team straightforward and readable.",
       action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
     });
@@ -62,6 +63,38 @@ describe("AI browser client validation", () => {
     expect(result).toEqual({
       source: "fallback",
       fallbackReason: "api-error",
+      speech: "Endpoint fallback.",
+      action: { type: "vote", approve: false }
+    });
+  });
+
+  it("preserves endpoint fallback detail diagnostics", async () => {
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"]
+    });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      source: "fallback",
+      fallbackReason: "invalid-json",
+      fallbackDetail: "malformed-json",
+      speech: "Endpoint fallback.",
+      action: { type: "vote", approve: false }
+    }), { status: 200, headers: { "Content-Type": "application/json" } }))));
+
+    const result = await requestAiAction({
+      state,
+      playerId: "p1",
+      actionKind: "vote",
+      legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+      reasoningEffort: "low",
+      language: "en",
+      model: "model-a"
+    });
+
+    expect(result).toEqual({
+      source: "fallback",
+      fallbackReason: "invalid-json",
+      fallbackDetail: "malformed-json",
       speech: "Endpoint fallback.",
       action: { type: "vote", approve: false }
     });

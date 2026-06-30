@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { getRoleKnowledge, ROLE_DEFINITIONS } from "../game/rules";
+import { getRoleKnowledge } from "../game/rules";
 import type { GameState, Player } from "../game/types";
-import type { AiActionKind, AiDecision, AiDecisionResult, AiFallbackReason, AiSpeechRepairReason, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
+import type { AiActionKind, AiDecision, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiSpeechRepairReason, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
 
 interface BuildPromptInput {
   state: GameState;
@@ -16,7 +16,7 @@ interface BuildPromptInput {
 
 const actionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("proposeTeam"), teamIds: z.array(z.string()).min(1) }),
-  z.object({ type: z.literal("vote"), approve: z.boolean() }),
+  z.object({ type: z.literal("vote"), approve: voteChoiceSchema() }),
   z.object({ type: z.literal("quest"), card: z.enum(["success", "fail"]) }),
   z.object({ type: z.literal("assassinate"), targetId: z.string() })
 ]);
@@ -28,15 +28,33 @@ const decisionSchema = z.object({
 
 const compactActionSchema = z.discriminatedUnion("t", [
   z.object({ t: z.literal("pt"), ids: z.array(z.string()).min(1) }),
-  z.object({ t: z.literal("v"), ok: z.boolean() }),
+  z.object({ t: z.literal("v"), ok: voteChoiceSchema() }),
   z.object({ t: z.literal("q"), c: z.enum(["success", "fail"]) }),
   z.object({ t: z.literal("as"), id: z.string() })
 ]);
 
+const sloppyVoteActionSchema = z.object({
+  ok: voteChoiceSchema().optional(),
+  v: voteChoiceSchema().optional()
+}).refine((value) => value.ok !== undefined || value.v !== undefined);
+
 const compactDecisionSchema = z.object({
   s: z.string().trim().min(1).max(240),
-  a: compactActionSchema
+  a: z.union([compactActionSchema, sloppyVoteActionSchema])
 });
+
+const compactActionEnvelopeSchema = z.object({
+  a: z.union([compactActionSchema, sloppyVoteActionSchema])
+});
+
+function voteChoiceSchema(): z.ZodType<boolean | 0 | 1 | string> {
+  return z.union([
+    z.boolean(),
+    z.literal(0),
+    z.literal(1),
+    z.enum(["true", "false", "yes", "no", "ok", "approve", "reject", "approved", "rejected", "A", "R", "a", "r"])
+  ]);
+}
 
 export function createPersona(playerId: string, playerCount: number): Persona {
   const seed = hashString(`${playerId}:${playerCount}:avalon`);
@@ -54,17 +72,17 @@ export function buildAIPrompt(input: BuildPromptInput): { messages: ChatMessage[
   const knowledge = getRoleKnowledge(input.state, input.playerId);
   const publicState = summarizePublicState(input.state);
   const privateState = [
-    `SELF id=${player.id} seat=${player.seat + 1} role=${player.role} label=${ROLE_DEFINITIONS[player.role].label} side=${player.allegiance}`,
+    `SELF id=${player.id} seat=${player.seat + 1} role=${player.role} side=${player.allegiance}`,
     `KE=${compactList(knowledge.knownEvilIds)} MC=${compactList(knowledge.merlinCandidateIds)}`,
     roleWarnings(player)
   ].join("\n");
 
   const system = [
-    "AVALON_AGENT_V3.",
-    "Pick one legal LA; engine validates.",
-    "Public speech: never state hidden role/side/private cards/reasoning as certainty.",
-    "No public role words; say behavior, timing, team pressure.",
-    "JSON only; prefer short keys."
+    "AVALON_AGENT_V4.",
+    "Pick legal LA.",
+    "Public speech: no hidden role/side/card/reason certainty.",
+    "No public role words; use behavior/timing/team pressure.",
+    "JSON only; short keys."
   ].join(" ");
 
   const user = [
@@ -124,30 +142,33 @@ export function extractJsonObject(raw: string): string | null {
 export function parseAiDecision(raw: string, legalActions: LegalAction[], fallback: AiDecision): AiDecisionResult {
   const json = extractJsonObject(raw);
   if (!json) {
-    return fallbackDecision(fallback, "invalid-json");
+    return fallbackDecision(fallback, "invalid-json", "no-json-object");
   }
 
+  let value: unknown;
   try {
-    const parsed = normalizeAiDecision(JSON.parse(json));
-    if (!parsed) {
-      return fallbackDecision(fallback, "invalid-json");
-    }
-    if (!legalActions.some((action) => sameAction(action, parsed.action))) {
-      return fallbackDecision(fallback, "illegal-action");
-    }
-
-    const repaired = parsed.speech === null
-      ? { speech: safeSpeechForAction(parsed.action, fallback), reason: "missing-speech" as const }
-      : repairPublicSpeech(parsed.speech, parsed.action, fallback);
-    return {
-      speech: repaired.speech,
-      action: parsed.action,
-      source: "model",
-      ...(repaired.reason ? { speechRepairReason: repaired.reason } : {})
-    };
+    value = JSON.parse(json);
   } catch {
-    return fallbackDecision(fallback, "invalid-json");
+    return fallbackDecision(fallback, "invalid-json", "malformed-json");
   }
+
+  const parsed = normalizeAiDecision(value);
+  if (!parsed) {
+    return fallbackDecision(fallback, "invalid-json", "invalid-decision-shape");
+  }
+  if (!legalActions.some((action) => sameAction(action, parsed.action))) {
+    return fallbackDecision(fallback, "illegal-action", "illegal-action");
+  }
+
+  const repaired = parsed.speech === null
+    ? { speech: safeSpeechForAction(parsed.action, fallback), reason: "missing-speech" as const }
+    : repairPublicSpeech(parsed.speech, parsed.action, fallback);
+  return {
+    speech: repaired.speech,
+    action: parsed.action,
+    source: "model",
+    ...(repaired.reason ? { speechRepairReason: repaired.reason } : {})
+  };
 }
 
 export function sameAction(left: LegalAction, right: LegalAction): boolean {
@@ -179,8 +200,8 @@ function sameTeam(left: string[], right: string[]): boolean {
   return left.every((id) => rightIds.has(id));
 }
 
-function fallbackDecision(fallback: AiDecision, fallbackReason: AiFallbackReason): AiDecisionResult {
-  return { ...fallback, source: "fallback", fallbackReason };
+function fallbackDecision(fallback: AiDecision, fallbackReason: AiFallbackReason, fallbackDetail?: AiFallbackDetail): AiDecisionResult {
+  return { ...fallback, source: "fallback", fallbackReason, ...(fallbackDetail ? { fallbackDetail } : {}) };
 }
 
 function repairPublicSpeech(speech: string, action: LegalAction, fallback: AiDecision): { speech: string; reason?: AiSpeechRepairReason } {
@@ -210,6 +231,7 @@ function hasUnsafePublicRoleWord(speech: string): boolean {
 
 function isSchemaEcho(speech: string): boolean {
   return /<=\s*\d+\s*(?:chars?\s*)?public/iu.test(speech)
+    || /\bpub\s*<=\s*\d+\b/iu.test(speech)
     || /\b(true\|false|success\|fail|pX)\b/u.test(speech);
 }
 
@@ -230,10 +252,11 @@ function contradictsVoteAction(speech: string, action: LegalAction): boolean {
 
   const normalized = speech.toLowerCase();
   if (action.approve) {
-    return /\b(reject(?:ing)?|avoid|prefer (?:a )?cleaner|rather (?:see|get|have) (?:a )?cleaner|before (?:greenlighting|backing)|do not like|don't like)\b/iu.test(normalized);
+    return /^\s*no\b/iu.test(normalized)
+      || /\b(reject(?:ing)?|avoid (?:this|team|lineup|pair|proposal|p\d+)|prefer (?:a )?cleaner|want (?:a )?cleaner|rather (?:see|get|have) (?:a )?cleaner|before (?:greenlighting|backing|locking)|before (?:giving|granting) (?:a )?(?:clean )?pass|before i trust|do not like|don't like|can't back|cannot back)\b/iu.test(normalized);
   }
 
-  return /\b(approv(?:e|ing)|acceptable|looks reasonable|fine with|greenlight|backing this|voting yes)\b/iu.test(normalized);
+  return /\b(approv(?:e|ing)|acceptable|looks reasonable|fine with|greenlight|backing this|vot(?:e|ing) yes)\b/iu.test(normalized);
 }
 
 function safeSpeechForAction(action: LegalAction, fallback: AiDecision): string {
@@ -256,7 +279,10 @@ function safeSpeechForAction(action: LegalAction, fallback: AiDecision): string 
 function normalizeAiDecision(value: unknown): { speech: string | null; action: LegalAction } | null {
   const canonical = decisionSchema.safeParse(value);
   if (canonical.success) {
-    return canonical.data;
+    return {
+      speech: canonical.data.speech,
+      action: normalizeCanonicalAction(canonical.data.action)
+    };
   }
 
   const compact = compactDecisionSchema.safeParse(value);
@@ -269,24 +295,50 @@ function normalizeAiDecision(value: unknown): { speech: string | null; action: L
 
   const canonicalAction = actionSchema.safeParse(value);
   if (canonicalAction.success) {
-    return { speech: null, action: canonicalAction.data };
+    return { speech: null, action: normalizeCanonicalAction(canonicalAction.data) };
+  }
+
+  const compactEnvelope = compactActionEnvelopeSchema.safeParse(value);
+  if (compactEnvelope.success) {
+    return { speech: null, action: normalizeCompactAction(compactEnvelope.data.a) };
   }
 
   const compactAction = compactActionSchema.safeParse(value);
   return compactAction.success ? { speech: null, action: normalizeCompactAction(compactAction.data) } : null;
 }
 
-function normalizeCompactAction(action: z.infer<typeof compactActionSchema>): LegalAction {
+function normalizeCanonicalAction(action: z.infer<typeof actionSchema>): LegalAction {
+  if (action.type === "vote") {
+    return { type: "vote", approve: normalizeVoteChoice(action.approve) };
+  }
+  return action;
+}
+
+function normalizeCompactAction(action: z.infer<typeof compactActionSchema> | z.infer<typeof sloppyVoteActionSchema>): LegalAction {
+  if (!("t" in action)) {
+    return { type: "vote", approve: normalizeVoteChoice(action.ok ?? action.v ?? false) };
+  }
   if (action.t === "pt") {
     return { type: "proposeTeam", teamIds: action.ids };
   }
   if (action.t === "v") {
-    return { type: "vote", approve: action.ok };
+    return { type: "vote", approve: normalizeVoteChoice(action.ok) };
   }
   if (action.t === "q") {
     return { type: "quest", card: action.c };
   }
   return { type: "assassinate", targetId: action.id };
+}
+
+function normalizeVoteChoice(value: boolean | 0 | 1 | string): boolean {
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value === 1;
+  }
+
+  return ["true", "yes", "ok", "approve", "approved", "a"].includes(value.toLowerCase());
 }
 
 function summarizePublicState(state: GameState): string {
@@ -335,7 +387,7 @@ function summarizeTableTalk(tableTalk: PublicTalkEntry[]): string {
   const recentTalk = tableTalk.slice(-12);
   return [
     "TT oldest>newest",
-    ...recentTalk.map((entry, index) => `${index + 1}|${entry.speakerId}|${entry.speakerName}|${entry.text}`)
+    ...recentTalk.map((entry, index) => `${index + 1}|${entry.speakerId}|${entry.text}`)
   ].join("\n");
 }
 
@@ -362,15 +414,15 @@ function summarizeLegalActions(legalActions: LegalAction[]): string {
 
 function outputContract(actionKind: AiActionKind): string {
   if (actionKind === "proposeTeam") {
-    return "OUT {\"s\":\"<=160 public\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}}; ids from LA, exact n";
+    return "OUT {\"s\":\"pub<=160\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} ids=LA n";
   }
   if (actionKind === "vote") {
-    return "OUT {\"s\":\"<=160 public\",\"a\":{\"t\":\"v\",\"ok\":true}}; use false to reject";
+    return "OUT {\"s\":\"pub<=160\",\"a\":{\"t\":\"v\",\"ok\":1}} 0=reject";
   }
   if (actionKind === "quest") {
-    return "OUT {\"s\":\"<=120 public\",\"a\":{\"t\":\"q\",\"c\":\"success\"}}; fail only if LA";
+    return "OUT {\"s\":\"pub<=120\",\"a\":{\"t\":\"q\",\"c\":\"success\"}} fail only if LA";
   }
-  return "OUT {\"s\":\"<=160 public\",\"a\":{\"t\":\"as\",\"id\":\"pX\"}}; id from LA";
+  return "OUT {\"s\":\"pub<=160\",\"a\":{\"t\":\"as\",\"id\":\"pX\"}} id=LA";
 }
 
 function compactList(ids: string[]): string {
@@ -378,7 +430,7 @@ function compactList(ids: string[]): string {
 }
 
 function formatPersona(value: number): string {
-  return value.toFixed(2);
+  return Math.round(value * 99).toString();
 }
 
 function comparePlayerIds(left: string, right: string): number {
@@ -392,44 +444,44 @@ function playerIdNumber(playerId: string): number {
 
 function roleWarnings(player: Player): string {
   if (player.role === "merlin") {
-    return "Mordred may be hidden from Merlin. Guide Good subtly; do not make yourself obvious to the Assassin.";
+    return "RW mordred_hidden; subtle_good; assassin_cover";
   }
   if (player.role === "percival") {
-    return "Do not state that either candidate is certainly Merlin. Protect the real Merlin by creating cover.";
+    return "RW mc_uncertain; cover_merlin";
   }
   if (player.allegiance === "evil") {
-    return "You may deceive in table talk, but your chosen action must still be legal.";
+    return "RW deceive_ok; legal_action_only";
   }
 
-  return "You have no private role knowledge. Infer from public proposals, votes, quest teams, and outcomes.";
+  return "RW public_only; infer_votes_quests";
 }
 
 function roleStrategy(player: Player): string {
   if (player.role === "merlin") {
-    return "Nudge teams away from known evil players while sounding like you are reading public behavior.";
+    return "steer_not_KE; sound_public";
   }
   if (player.role === "percival") {
-    return "Compare the two Merlin candidates without revealing which one you trust. Create plausible Merlin cover when needed.";
+    return "compare_MC; cover_real_merlin";
   }
   if (player.role === "assassin") {
-    return "Win quests when useful, sabotage when it creates advantage, and track who seems to guide Good with hidden confidence.";
+    return "sabotage_when_plus; track_hidden_guides";
   }
   if (player.allegiance === "evil") {
-    return "Blend into Good voting patterns, avoid repeated mechanical sabotage, and cast doubt on accurate Good reads.";
+    return "blend_votes; vary_sabotage; doubt_good_reads";
   }
 
-  return "Build trust through consistent public reasoning. Protect possible Merlin players and pressure suspicious voting or quest patterns.";
+  return "consistent_public_reads; protect_merlinish; pressure_bad_patterns";
 }
 
 function reasoningInstruction(effort: ReasoningEffort): string {
   if (effort === "high") {
-    return "full:history+votes+cover+Merlin-risk";
+    return "deep:hist+votes+cover+m-risk";
   }
   if (effort === "medium") {
-    return "med:proposal+votes+quests";
+    return "med:prop+votes+quests";
   }
 
-  return "fast:heuristic";
+  return "fast";
 }
 
 function requirePlayer(state: GameState, playerId: string): Player {

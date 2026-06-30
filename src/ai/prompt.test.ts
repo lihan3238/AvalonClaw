@@ -20,7 +20,9 @@ describe("AI prompt private information", () => {
 
     expect(prompt).toContain("KE=p4,p5,p7");
     expect(prompt).not.toContain("KE=p4,p5,p6,p7");
-    expect(prompt).toContain("Mordred may be hidden from Merlin");
+    expect(prompt).toContain("SELF id=p1 seat=1 role=merlin side=good");
+    expect(prompt).not.toContain("label=Merlin");
+    expect(prompt).toContain("RW mordred_hidden; subtle_good; assassin_cover");
   });
 
   it("shows Percival ambiguous Merlin candidates without asserting which is real", () => {
@@ -34,7 +36,7 @@ describe("AI prompt private information", () => {
     }).messages.map((message) => message.content).join("\n");
 
     expect(prompt).toContain("MC=p1,p5");
-    expect(prompt).toContain("Do not state that either candidate is certainly Merlin");
+    expect(prompt).toContain("RW mc_uncertain; cover_merlin");
   });
 
   it("does not leak hidden roles to Loyal Servants", () => {
@@ -49,6 +51,7 @@ describe("AI prompt private information", () => {
 
     expect(prompt).toContain("KE=-");
     expect(prompt).toContain("MC=-");
+    expect(prompt).toContain("RW public_only; infer_votes_quests");
     expect(prompt).not.toContain("p4=Assassin");
     expect(prompt).not.toContain("p5=Morgana");
   });
@@ -122,8 +125,9 @@ describe("AI prompt public talk order", () => {
     }).messages.map((message) => message.content).join("\n");
 
     expect(prompt).toContain("TT oldest>newest");
-    expect(prompt).toContain("1|p1|AI 1|I trust p2 first.");
-    expect(prompt).toContain("2|p2|AI 2|That trust came too early.");
+    expect(prompt).toContain("1|p1|I trust p2 first.");
+    expect(prompt).toContain("2|p2|That trust came too early.");
+    expect(prompt).not.toContain("|AI 1|");
   });
 });
 
@@ -149,7 +153,7 @@ describe("AI prompt token budget", () => {
     }).messages[0].content;
 
     expect(first).toBe(second);
-    expect(first.length).toBeLessThan(360);
+    expect(first.length).toBeLessThan(170);
   });
 
   it("summarizes proposal legality without enumerating every team combination", () => {
@@ -189,7 +193,7 @@ describe("AI prompt token budget", () => {
     expect(prompt).not.toContain("Role strategy:");
     expect(prompt).toContain("No public role words");
     expect(prompt).toContain("OUT ");
-    expect(prompt.length).toBeLessThan(1800);
+    expect(prompt.length).toBeLessThan(800);
   });
 });
 
@@ -227,6 +231,35 @@ describe("AI response parsing", () => {
       speech: "Fallback",
       action: { type: "vote", approve: false }
     })).toEqual({ speech: "Approve.", action: { type: "vote", approve: true }, source: "model" });
+    expect(parseAiDecision('{"s":"Approve.","a":{"t":"v","ok":1}}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: false }
+    })).toEqual({ speech: "Approve.", action: { type: "vote", approve: true }, source: "model" });
+    expect(parseAiDecision('{"speech":"I want a cleaner proposal.","action":{"type":"vote","approve":"reject"}}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: true }
+    })).toEqual({ speech: "I want a cleaner proposal.", action: { type: "vote", approve: false }, source: "model" });
+    expect(parseAiDecision('{"s":"Team looks balanced; voting yes.","a":{"v":"ok","ok":1}}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: false }
+    })).toEqual({ speech: "Team looks balanced; voting yes.", action: { type: "vote", approve: true }, source: "model" });
+    expect(parseAiDecision('{"a":{"t":"v","ok":1}}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: false }
+    })).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "missing-speech"
+    });
+    expect(parseAiDecision('{"s":"too much self-control on this line; i want a tighter pair with better cross-checks.","a":{"v":0}}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: true }
+    })).toEqual({
+      speech: "too much self-control on this line; i want a tighter pair with better cross-checks.",
+      action: { type: "vote", approve: false },
+      source: "model"
+    });
 
     expect(parseAiDecision('{"s":"Same team.","a":{"t":"pt","ids":["p2","p1"]}}', [{ type: "proposeTeam", teamIds: ["p1", "p2"] }], {
       speech: "Fallback",
@@ -292,6 +325,12 @@ describe("AI response parsing", () => {
       source: "model",
       speechRepairReason: "schema-echo"
     });
+    expect(parseAiDecision('{"s":"pub<=160","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "schema-echo"
+    });
     expect(parseAiDecision('{"s":"v","a":{"t":"v","ok":true}}', legalVotes, fallback)).toEqual({
       speech: "This team is acceptable for now.",
       action: { type: "vote", approve: true },
@@ -323,6 +362,29 @@ describe("AI response parsing", () => {
       action: { type: "vote", approve: true },
       source: "model",
       speechRepairReason: "action-mismatch"
+    });
+    expect(parseAiDecision('{"s":"No. Self-plus-one first draft gives too much control; I want a cleaner split and more talk before I trust it.","a":{"t":"v","ok":true}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "action-mismatch"
+    });
+    expect(parseAiDecision('{"s":"Early pair is thin; I want one more round of pressure before giving a clean pass.","a":{"t":"v","ok":true}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "action-mismatch"
+    });
+    expect(parseAiDecision('{"s":"team looks light; I want one more round of pressure before locking.","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "action-mismatch"
+    });
+    expect(parseAiDecision('{"s":"Early vote keeps options open; I’m leaning yes to avoid overcommitting now.","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "Early vote keeps options open; I’m leaning yes to avoid overcommitting now.",
+      action: { type: "vote", approve: true },
+      source: "model"
     });
     expect(parseAiDecision('{"s":"Looks reasonable; voting yes.","a":{"t":"v","ok":false}}', legalVotes, {
       speech: "This team is acceptable for now.",
@@ -364,16 +426,29 @@ describe("AI response parsing", () => {
   it("falls back when JSON is malformed or the action is illegal", () => {
     const fallback = { speech: "No legal model action. Rejecting.", action: { type: "vote" as const, approve: false } };
 
-    expect(parseAiDecision("not json", legalVotes, fallback)).toEqual({ ...fallback, source: "fallback", fallbackReason: "invalid-json" });
+    expect(parseAiDecision("not json", legalVotes, fallback)).toEqual({
+      ...fallback,
+      source: "fallback",
+      fallbackReason: "invalid-json",
+      fallbackDetail: "no-json-object"
+    });
+    expect(parseAiDecision("{bad}", legalVotes, fallback)).toEqual({
+      ...fallback,
+      source: "fallback",
+      fallbackReason: "invalid-json",
+      fallbackDetail: "malformed-json"
+    });
     expect(parseAiDecision('{"speech":"Skip","action":{"type":"vote","approve":"maybe"}}', legalVotes, fallback)).toEqual({
       ...fallback,
       source: "fallback",
-      fallbackReason: "invalid-json"
+      fallbackReason: "invalid-json",
+      fallbackDetail: "invalid-decision-shape"
     });
     expect(parseAiDecision('{"speech":"Illegal","action":{"type":"vote","approve":true}}', [{ type: "vote", approve: false }], fallback)).toEqual({
       ...fallback,
       source: "fallback",
-      fallbackReason: "illegal-action"
+      fallbackReason: "illegal-action",
+      fallbackDetail: "illegal-action"
     });
   });
 });

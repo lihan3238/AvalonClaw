@@ -12,7 +12,7 @@ import {
   proposeTeam,
   submitQuestCard
 } from "../src/game/rules";
-import type { AiActionKind, AiFallbackReason, AiSpeechRepairReason, LegalAction, ReasoningEffort, TableLanguage } from "../src/ai/types";
+import type { AiActionKind, AiFallbackDetail, AiFallbackReason, AiSpeechRepairReason, LegalAction, ReasoningEffort, TableLanguage } from "../src/ai/types";
 import type { GameState } from "../src/game/types";
 
 dotenv.config();
@@ -31,7 +31,9 @@ interface TraceEntry {
   actionKind: AiActionKind;
   source: "model" | "fallback";
   fallbackReason?: AiFallbackReason;
+  fallbackDetail?: AiFallbackDetail;
   speechRepairReason?: AiSpeechRepairReason;
+  rawModelContent?: string;
   modelTier: ModelTier;
   action: LegalAction;
   speech: string;
@@ -60,6 +62,7 @@ maybeDescribe("manual real API full-game smoke", () => {
     const scenarioConfig = readScenarioConfig(config.model);
     const scenarios = readScenarios();
     const includeTrace = process.env.AVALON_REAL_API_INCLUDE_TRACE !== "0";
+    const includeRawModelContent = process.env.AVALON_REAL_API_INCLUDE_RAW === "1";
     const streamSteps = process.env.AVALON_REAL_API_STREAM === "1";
     const maxSteps = readPositiveInt("AVALON_REAL_API_MAX_STEPS", 180);
     const baseSeed = readPositiveInt("AVALON_REAL_API_SEED", Date.now() % 1_000_000);
@@ -76,7 +79,8 @@ maybeDescribe("manual real API full-game smoke", () => {
           scenarioConfig,
           language,
           maxSteps,
-          streamSteps
+          streamSteps,
+          includeRawModelContent
         });
 
         expect(result.final.phase).toBe("gameOver");
@@ -132,6 +136,7 @@ async function playRealApiGame(input: {
   language: TableLanguage;
   maxSteps: number;
   streamSteps: boolean;
+  includeRawModelContent: boolean;
 }): Promise<{ final: GameState; steps: number; trace: TraceEntry[] }> {
   let state = createInitialGame({
     playerCount: input.playerCount,
@@ -157,7 +162,8 @@ async function playRealApiGame(input: {
         reasoningEffort: playerProfile.reasoningEffort,
         language: input.language,
         model: playerProfile.model
-      }
+      },
+      includeRawModelContent: input.includeRawModelContent
     });
 
     const traceEntry: TraceEntry = {
@@ -171,7 +177,9 @@ async function playRealApiGame(input: {
       actionKind: next.actionKind,
       source: decision.source,
       fallbackReason: decision.fallbackReason,
+      fallbackDetail: decision.fallbackDetail,
       speechRepairReason: decision.speechRepairReason,
+      rawModelContent: input.includeRawModelContent ? decision.rawModelContent : undefined,
       action: decision.action,
       speech: decision.speech
     };

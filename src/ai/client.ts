@@ -1,6 +1,6 @@
 import { chooseFallbackDecision } from "./fallback";
 import { parseAiDecision } from "./prompt";
-import type { AiActionKind, AiDecisionResult, AiFallbackReason, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
+import type { AiActionKind, AiDecisionResult, AiFallbackDetail, AiFallbackReason, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
 import type { GameState } from "../game/types";
 
 interface RequestAiActionInput {
@@ -29,12 +29,14 @@ export async function requestAiAction(input: RequestAiActionInput): Promise<AiDe
     const raw = await response.text();
     const endpointSource = readEndpointSource(raw);
     const endpointReason = readEndpointFallbackReason(raw);
+    const endpointDetail = readEndpointFallbackDetail(raw);
     const decision = parseAiDecision(raw, input.legalActions, fallback);
     if (endpointSource === "fallback") {
       return {
         ...decision,
         source: "fallback",
-        fallbackReason: endpointReason ?? decision.fallbackReason ?? "api-error"
+        fallbackReason: endpointReason ?? decision.fallbackReason ?? "api-error",
+        ...(endpointDetail ?? decision.fallbackDetail ? { fallbackDetail: endpointDetail ?? decision.fallbackDetail } : {})
       };
     }
     if (decision.source === "fallback" && decision.fallbackReason === "illegal-action" && endpointSource === "model") {
@@ -65,6 +67,15 @@ function readEndpointFallbackReason(raw: string): AiFallbackReason | null {
   }
 }
 
+function readEndpointFallbackDetail(raw: string): AiFallbackDetail | null {
+  try {
+    const parsed = JSON.parse(raw) as { fallbackDetail?: unknown };
+    return isAiFallbackDetail(parsed.fallbackDetail) ? parsed.fallbackDetail : null;
+  } catch {
+    return null;
+  }
+}
+
 function isAiFallbackReason(value: unknown): value is AiFallbackReason {
   return value === "missing-config"
     || value === "api-error"
@@ -76,4 +87,11 @@ function isAiFallbackReason(value: unknown): value is AiFallbackReason {
     || value === "illegal-action"
     || value === "client-illegal-action"
     || value === "network-error";
+}
+
+function isAiFallbackDetail(value: unknown): value is AiFallbackDetail {
+  return value === "no-json-object"
+    || value === "malformed-json"
+    || value === "invalid-decision-shape"
+    || value === "illegal-action";
 }

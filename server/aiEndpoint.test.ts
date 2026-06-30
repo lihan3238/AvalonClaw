@@ -69,6 +69,33 @@ describe("AI endpoint orchestration", () => {
     expect(result).toMatchObject({ source: "fallback", fallbackReason: "illegal-action", action: { type: "vote", approve: false } });
   });
 
+  it("can include raw model content for manual trace diagnostics", async () => {
+    const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
+    const modelContent = "{\"s\":\"Approve.\",\"a\":{\"t\":\"v\",\"ok\":1}}";
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: modelContent } }] }), { status: 200 })
+    );
+
+    const result = await createAiActionResult({
+      body: {
+        state,
+        playerId: "p2",
+        actionKind: "vote",
+        legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+        reasoningEffort: "low"
+      },
+      config,
+      fetchImpl,
+      includeRawModelContent: true
+    });
+
+    expect(result).toMatchObject({
+      source: "model",
+      action: { type: "vote", approve: true },
+      rawModelContent: modelContent
+    });
+  });
+
   it("reports API failures as fallback diagnostics", async () => {
     const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
     const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), { status: 500 }));

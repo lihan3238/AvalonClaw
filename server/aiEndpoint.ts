@@ -21,6 +21,7 @@ interface CreateAiActionInput {
   body: AiActionRequestBody;
   config?: OpenAICompatibleConfig;
   fetchImpl?: typeof fetch;
+  includeRawModelContent?: boolean;
 }
 
 export async function createAiActionResult(input: CreateAiActionInput): Promise<AiDecisionResult> {
@@ -56,7 +57,8 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
       fetchImpl: input.fetchImpl
     });
 
-    return parseAiDecision(content, legalActions, fallback);
+    const decision = parseAiDecision(content, legalActions, fallback);
+    return input.includeRawModelContent ? { ...decision, rawModelContent: content } : decision;
   } catch (error) {
     return {
       ...fallback,

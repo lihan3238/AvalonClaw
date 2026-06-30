@@ -47,6 +47,12 @@ export type AiFallbackReason =
   | "client-illegal-action"
   | "network-error";
 
+export type AiFallbackDetail =
+  | "no-json-object"
+  | "malformed-json"
+  | "invalid-decision-shape"
+  | "illegal-action";
+
 export type AiSpeechRepairReason =
   | "missing-speech"
   | "unsafe-role-word"
@@ -58,5 +64,7 @@ export type AiSpeechRepairReason =
 export interface AiDecisionResult extends AiDecision {
   source: "model" | "fallback";
   fallbackReason?: AiFallbackReason;
+  fallbackDetail?: AiFallbackDetail;
   speechRepairReason?: AiSpeechRepairReason;
+  rawModelContent?: string;
 }
