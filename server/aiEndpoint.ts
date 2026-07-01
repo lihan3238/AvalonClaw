@@ -81,6 +81,9 @@ export function effectiveReasoningEffortForAction(actionKind: AiActionKind, requ
   if (actionKind === "vote" && requested === "high") {
     return "medium";
   }
+  if (actionKind === "assassinate" && requested === "high") {
+    return "medium";
+  }
   return requested;
 }
 

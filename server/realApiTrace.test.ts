@@ -16,6 +16,8 @@ describe("real API trace diagnostics", () => {
         source: "fallback",
         actionKind: "vote",
         modelTier: "weak",
+        requestedReasoningEffort: "high",
+        reasoningEffort: "medium",
         fallbackReason: "invalid-json",
         fallbackDetail: "invalid-decision-shape"
       },
@@ -23,6 +25,8 @@ describe("real API trace diagnostics", () => {
         source: "fallback",
         actionKind: "proposeTeam",
         modelTier: "strong",
+        requestedReasoningEffort: "high",
+        reasoningEffort: "high",
         fallbackReason: "api-timeout"
       },
       {
@@ -41,6 +45,8 @@ describe("real API trace diagnostics", () => {
       fallbacksByDetail: { "invalid-decision-shape": 1 },
       fallbacksByActionKind: { vote: 1, proposeTeam: 1 },
       fallbacksByModelTier: { weak: 1, strong: 1 },
+      fallbacksByReasoningEffort: { medium: 1, high: 1 },
+      fallbacksByRequestedReasoningEffort: { high: 2 },
       localByActionKind: { quest: 1 },
       speechRepairsByReason: { "missing-speech": 1 }
     });

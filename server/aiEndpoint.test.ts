@@ -46,7 +46,7 @@ describe("AI endpoint orchestration", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("caps reasoning effort for short action kinds before prompting and transport", async () => {
+  it("caps reasoning effort for short and bounded action kinds before prompting and transport", async () => {
     const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
     const fetchImpl = vi
       .fn()
@@ -55,6 +55,9 @@ describe("AI endpoint orchestration", () => {
       )
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"Resolving.\",\"a\":{\"t\":\"q\",\"c\":\"fail\"}}" } }] }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"This read fits.\",\"a\":{\"t\":\"as\",\"id\":\"p1\"}}" } }] }), { status: 200 })
       );
     let questState = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
     questState = proposeTeam(questState, "p1", ["p1", "p4"]);
@@ -84,13 +87,41 @@ describe("AI endpoint orchestration", () => {
       config,
       fetchImpl
     });
+    const assassinationState = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"],
+      phase: "assassination",
+      questResults: [
+        { teamIds: ["p1", "p2"], failCards: 0, succeeded: true },
+        { teamIds: ["p1", "p3", "p4"], failCards: 0, succeeded: true },
+        { teamIds: ["p2", "p3"], failCards: 0, succeeded: true }
+      ]
+    });
+    await createAiActionResult({
+      body: {
+        state: assassinationState,
+        playerId: "p4",
+        actionKind: "assassinate",
+        legalActions: [
+          { type: "assassinate", targetId: "p1" },
+          { type: "assassinate", targetId: "p2" },
+          { type: "assassinate", targetId: "p3" }
+        ],
+        reasoningEffort: "high"
+      },
+      config,
+      fetchImpl
+    });
 
     const voteBody = JSON.parse(fetchImpl.mock.calls[0][1].body);
     const questBody = JSON.parse(fetchImpl.mock.calls[1][1].body);
+    const assassinateBody = JSON.parse(fetchImpl.mock.calls[2][1].body);
     expect(voteBody.reasoning_effort).toBe("medium");
     expect(voteBody.messages[1].content).toContain("A=vote R=medium:");
     expect(questBody.reasoning_effort).toBe("low");
     expect(questBody.messages[1].content).toContain("A=quest R=low:");
+    expect(assassinateBody.reasoning_effort).toBe("medium");
+    expect(assassinateBody.messages[1].content).toContain("A=assassinate R=medium:");
   });
 
   it("resolves a single legal quest card locally without spending an API call", async () => {

@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { AiActionKind, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiSpeechRepairReason } from "../src/ai/types";
+import type { AiActionKind, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiSpeechRepairReason, ReasoningEffort } from "../src/ai/types";
 
 export type RealApiTraceModelTier = "strong" | "weak" | "uniform";
 
@@ -11,6 +11,8 @@ export interface RealApiTraceEntry {
   fallbackDetail?: AiFallbackDetail;
   speechRepairReason?: AiSpeechRepairReason;
   modelTier: RealApiTraceModelTier;
+  requestedReasoningEffort?: ReasoningEffort;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface RealApiTraceDiagnostics {
@@ -22,6 +24,8 @@ export interface RealApiTraceDiagnostics {
   fallbacksByDetail: Partial<Record<AiFallbackDetail, number>>;
   fallbacksByActionKind: Partial<Record<AiActionKind, number>>;
   fallbacksByModelTier: Partial<Record<RealApiTraceModelTier, number>>;
+  fallbacksByReasoningEffort: Partial<Record<ReasoningEffort, number>>;
+  fallbacksByRequestedReasoningEffort: Partial<Record<ReasoningEffort, number>>;
   localByActionKind: Partial<Record<AiActionKind, number>>;
   speechRepairsByReason: Partial<Record<AiSpeechRepairReason, number>>;
 }
@@ -36,6 +40,8 @@ export function summarizeRealApiTrace(trace: RealApiTraceEntry[]): RealApiTraceD
     fallbacksByDetail: {},
     fallbacksByActionKind: {},
     fallbacksByModelTier: {},
+    fallbacksByReasoningEffort: {},
+    fallbacksByRequestedReasoningEffort: {},
     localByActionKind: {},
     speechRepairsByReason: {}
   };
@@ -50,6 +56,12 @@ export function summarizeRealApiTrace(trace: RealApiTraceEntry[]): RealApiTraceD
       }
       if (entry.fallbackDetail) {
         increment(diagnostics.fallbacksByDetail, entry.fallbackDetail);
+      }
+      if (entry.reasoningEffort) {
+        increment(diagnostics.fallbacksByReasoningEffort, entry.reasoningEffort);
+      }
+      if (entry.requestedReasoningEffort) {
+        increment(diagnostics.fallbacksByRequestedReasoningEffort, entry.requestedReasoningEffort);
       }
     } else if (entry.source === "local") {
       diagnostics.localActions += 1;
