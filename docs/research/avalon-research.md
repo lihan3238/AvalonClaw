@@ -1,6 +1,6 @@
 # Avalon Research Notes
 
-Last updated: 2026-06-30.
+Last updated: 2026-07-01.
 
 ## Local Source Copies
 
@@ -16,6 +16,13 @@ Last updated: 2026-06-30.
 - Indie Boards and Cards Avalon Big Box page: `https://indieboardsandcards.com/our-games/avalon-big-box/`
 - OpenAI Chat Completions API reference: `https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create/`
 - OpenAI reasoning guide: `https://developers.openai.com/api/docs/guides/reasoning`
+- OpenAI prompt caching guide: `https://developers.openai.com/api/docs/guides/prompt-caching`
+- OpenAI structured outputs guide: `https://developers.openai.com/api/docs/guides/structured-outputs`
+- Avalon online rulebook mirror: `https://avalon.fun/pdfs/rules.pdf`
+- Dized rules, game end and winning: `https://rules.dized.com/game/rZluqS52QmGdpoVxcmVLtg/K_MlLyWiS_yuZsA5erj9nA/game-end-and-winning`
+- Dized rules, result of voting: `https://rules.dized.com/game/rZluqS52QmGdpoVxcmVLtg/V3eSkuHJSIi-qfEWDXPTAw/result-of-voting`
+- BoardGameGeek rules discussion quoting Assassin card wording: `https://boardgamegeek.com/thread/1210990/two-rule-questions-additional-roles-and-assassin-c`
+- BoardGames StackExchange endgame answer quoting the same rulebook wording: `https://boardgames.stackexchange.com/questions/21425/end-of-game-questions`
 - BoardGameGeek strategy threads:
   - `https://boardgamegeek.com/thread/1433790/avalon-strategy-guide`
   - `https://boardgamegeek.com/thread/2190616/avalon-strategy-deep-dive`
@@ -29,6 +36,8 @@ Last updated: 2026-06-30.
 - Teams: Good and Evil. Good needs three successful quests. Evil wins if three quests fail, five consecutive team proposals are rejected, or Assassin identifies Merlin after three successful quests.
 - Team proposal flow: current leader proposes a quest team of exact required size, all players publicly vote approve/reject, strict majority approves.
 - Quest flow: selected team members secretly submit success/fail. Good roles must submit success. Evil roles may submit success or fail. One fail fails most quests; in 7-10 player games, quest 4 requires two fail cards.
+- Vote track interpretation: Evil wins after five consecutive rejected team votes in one round. Some online Avalon variants describe the fifth leader as choosing without a vote; this project follows the original Avalon rulebook/Dized wording.
+- Assassination interpretation: after three successful quests, the Assassin names one Good player as Merlin. The legal target list excludes Evil players, including hidden Evil roles such as Oberon.
 - Quest team sizes:
 
 | Players | Q1 | Q2 | Q3 | Q4 | Q5 | Q4 Fail Cards |
@@ -53,6 +62,11 @@ Last updated: 2026-06-30.
 
 - AvalonBench frames Avalon as a language-heavy hidden-information game requiring deduction, coordination, persuasion, and deception. The prompt should force each AI to use legal actions grounded in public history, not private omniscience.
 - The 2024 LLM-agent paper emphasizes memory, analysis, planning, action generation, and experience updates. First version implements a compact per-action prompt with: public history, private role knowledge, a role strategy brief, legal action schema, and an output-only JSON contract.
+- AvalonBench used a separate parser LLM to reach reliable action extraction in pilot tests. This project keeps parser work local instead: compact JSON aliases, compatibility only for raw observed shapes, and a hard legal-action gate after parsing. This avoids an extra model call per action.
+- Both AvalonBench and the 2024 agent-society paper identify history growth as a token and reasoning problem. Current implementation keeps resolved quest/vote history structured, includes only recent table talk with explicit chronological order, and avoids replaying full rule text every action.
+- OpenAI prompt-caching guidance favors stable repeated prefixes. Keep invariant agent rules in the stable system message; keep dynamic game state in the user message. Do not add per-player prose to the system message.
+- OpenAI structured outputs are preferred for strict schema enforcement when a provider supports them. The current Chat Completions path keeps `json_object` for OpenAI-compatible provider breadth, then enforces the action schema and legal-action list locally.
+- `reasoning_effort` is an explicit cost/latency lever. Use high effort for expensive strategic seats or real evaluation scenarios, low effort for weak-agent simulations, and skip the API entirely when the action is deterministic, such as a Good player with only `quest:success` legal.
 - Community strategy discussions converge on the same practical constraints:
   - Merlin must guide without making the Assassin's job easy.
   - Percival and Loyal Servants should sometimes create cover for Merlin.

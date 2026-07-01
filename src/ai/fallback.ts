@@ -84,7 +84,7 @@ function proposalScore(state: GameState, playerId: string, avoided: Set<string>)
 function chooseAssassinationTarget(state: GameState, assassinId: string) {
   const knowledge = getRoleKnowledge(state, assassinId);
   const knownEvil = new Set(knowledge.knownEvilIds);
-  const legalTargets = state.players.filter((candidate) => candidate.id !== assassinId);
+  const legalTargets = state.players.filter((candidate) => candidate.allegiance === "good");
   const candidates = legalTargets.filter((candidate) => !knownEvil.has(candidate.id));
   const targetPool = candidates.length ? candidates : legalTargets;
 

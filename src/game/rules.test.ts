@@ -47,6 +47,13 @@ describe("Avalon rule tables", () => {
     expect(getDefaultRoles(10).filter((role) => role.allegiance === "good")).toHaveLength(6);
     expect(getDefaultRoles(10).filter((role) => role.allegiance === "evil")).toHaveLength(4);
   });
+
+  it("rejects unsupported player counts even with custom role lineups", () => {
+    expect(() => createInitialGame({
+      playerCount: 4,
+      roles: ["merlin", "loyal", "assassin", "morgana"]
+    })).toThrow(/supports 5-10 players/i);
+  });
 });
 
 describe("role knowledge", () => {
@@ -148,28 +155,40 @@ describe("quest and assassination resolution", () => {
   });
 
   it("moves to assassination after the third successful quest and resolves Merlin guesses", () => {
-    const game = createInitialGame({
-      playerCount: 5,
-      roles: ["merlin", "percival", "loyal", "assassin", "morgana"],
-      questResults: [
-        { teamIds: ["p1", "p2"], failCards: 0, succeeded: true },
-        { teamIds: ["p1", "p3", "p4"], failCards: 0, succeeded: true },
-        { teamIds: ["p2", "p3"], failCards: 0, succeeded: true }
-      ],
-      phase: "assassination"
-    });
+    const game = createAssassinationGame();
 
     expect(assassinateMerlin(game, "p4", "p2")).toMatchObject({ phase: "gameOver", winner: "good" });
     expect(assassinateMerlin(game, "p4", "p1")).toMatchObject({ phase: "gameOver", winner: "evil", winReason: "assassination" });
   });
 
   it("does not let the Assassin target themself", () => {
-    const game = createInitialGame({
+    const game = createAssassinationGame();
+
+    expect(() => assassinateMerlin(game, "p4", "p4")).toThrow(/cannot target themself/i);
+  });
+
+  it("only lets the Assassin name a good player after three successful quests", () => {
+    const game = createAssassinationGame();
+    const premature = createInitialGame({
       playerCount: 5,
       roles: ["merlin", "percival", "loyal", "assassin", "morgana"],
       phase: "assassination"
     });
 
-    expect(() => assassinateMerlin(game, "p4", "p4")).toThrow(/cannot target themself/i);
+    expect(() => assassinateMerlin(game, "p4", "p5")).toThrow(/good player/i);
+    expect(() => assassinateMerlin(premature, "p4", "p1")).toThrow(/three successful quests/i);
   });
 });
+
+function createAssassinationGame() {
+  return createInitialGame({
+    playerCount: 5,
+    roles: ["merlin", "percival", "loyal", "assassin", "morgana"],
+    questResults: [
+      { teamIds: ["p1", "p2"], failCards: 0, succeeded: true },
+      { teamIds: ["p1", "p3", "p4"], failCards: 0, succeeded: true },
+      { teamIds: ["p2", "p3"], failCards: 0, succeeded: true }
+    ],
+    phase: "assassination"
+  });
+}

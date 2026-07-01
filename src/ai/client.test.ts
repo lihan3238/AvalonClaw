@@ -68,6 +68,34 @@ describe("AI browser client validation", () => {
     });
   });
 
+  it("preserves local source when the endpoint resolved a deterministic action without the model", async () => {
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"]
+    });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      source: "local",
+      speech: "I am resolving the quest.",
+      action: { type: "quest", card: "success" }
+    }), { status: 200, headers: { "Content-Type": "application/json" } }))));
+
+    const result = await requestAiAction({
+      state,
+      playerId: "p1",
+      actionKind: "quest",
+      legalActions: [{ type: "quest", card: "success" }],
+      reasoningEffort: "low",
+      language: "en",
+      model: "model-a"
+    });
+
+    expect(result).toEqual({
+      source: "local",
+      speech: "I am resolving the quest.",
+      action: { type: "quest", card: "success" }
+    });
+  });
+
   it("preserves endpoint fallback detail diagnostics", async () => {
     const state = createInitialGame({
       playerCount: 5,

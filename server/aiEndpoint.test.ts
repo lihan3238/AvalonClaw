@@ -1,4 +1,4 @@
-import { createInitialGame } from "../src/game/rules";
+import { castVote, createInitialGame, proposeTeam } from "../src/game/rules";
 import { createAiActionResult } from "./aiEndpoint";
 import type { OpenAICompatibleConfig } from "./env";
 
@@ -44,6 +44,31 @@ describe("AI endpoint orchestration", () => {
 
     expect(result).toMatchObject({ source: "model", action: { type: "vote", approve: true } });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves a single legal quest card locally without spending an API call", async () => {
+    const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
+    const fetchImpl = vi.fn();
+    let questState = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
+    questState = proposeTeam(questState, "p1", ["p1", "p2"]);
+    for (const player of questState.players) {
+      questState = castVote(questState, player.id, true);
+    }
+
+    const result = await createAiActionResult({
+      body: {
+        state: questState,
+        playerId: "p1",
+        actionKind: "quest",
+        legalActions: [{ type: "quest", card: "success" }],
+        reasoningEffort: "low"
+      },
+      config,
+      fetchImpl
+    });
+
+    expect(result).toMatchObject({ source: "local", action: { type: "quest", card: "success" } });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("reports illegal model actions as fallback diagnostics", async () => {

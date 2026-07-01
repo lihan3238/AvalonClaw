@@ -39,6 +39,13 @@ export async function requestAiAction(input: RequestAiActionInput): Promise<AiDe
         ...(endpointDetail ?? decision.fallbackDetail ? { fallbackDetail: endpointDetail ?? decision.fallbackDetail } : {})
       };
     }
+    if (endpointSource === "local") {
+      return {
+        speech: decision.speech,
+        action: decision.action,
+        source: "local"
+      };
+    }
     if (decision.source === "fallback" && decision.fallbackReason === "illegal-action" && endpointSource === "model") {
       return { ...decision, fallbackReason: "client-illegal-action" };
     }
@@ -49,10 +56,10 @@ export async function requestAiAction(input: RequestAiActionInput): Promise<AiDe
   }
 }
 
-function readEndpointSource(raw: string): "model" | "fallback" | null {
+function readEndpointSource(raw: string): "model" | "fallback" | "local" | null {
   try {
     const parsed = JSON.parse(raw) as { source?: unknown };
-    return parsed.source === "model" || parsed.source === "fallback" ? parsed.source : null;
+    return parsed.source === "model" || parsed.source === "fallback" || parsed.source === "local" ? parsed.source : null;
   } catch {
     return null;
   }

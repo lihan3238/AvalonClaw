@@ -2,6 +2,7 @@ import dotenv from "dotenv";
 import { describe, expect, it } from "vitest";
 import { createAiActionResult } from "./aiEndpoint";
 import { hasUsableOpenAIConfig, readOpenAIConfigFromEnv } from "./env";
+import { appendRealApiResultJsonl, summarizeRealApiTrace, type RealApiTraceModelTier } from "./realApiTrace";
 import { getLegalActionsForPlayer } from "../src/game/legalActions";
 import {
   assassinateMerlin,
@@ -12,7 +13,7 @@ import {
   proposeTeam,
   submitQuestCard
 } from "../src/game/rules";
-import type { AiActionKind, AiFallbackDetail, AiFallbackReason, AiSpeechRepairReason, LegalAction, ReasoningEffort, TableLanguage } from "../src/ai/types";
+import type { AiActionKind, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiSpeechRepairReason, LegalAction, ReasoningEffort, TableLanguage } from "../src/ai/types";
 import type { GameState } from "../src/game/types";
 
 dotenv.config();
@@ -29,7 +30,7 @@ interface TraceEntry {
   model: string;
   reasoningEffort: ReasoningEffort;
   actionKind: AiActionKind;
-  source: "model" | "fallback";
+  source: AiDecisionResult["source"];
   fallbackReason?: AiFallbackReason;
   fallbackDetail?: AiFallbackDetail;
   speechRepairReason?: AiSpeechRepairReason;
@@ -40,7 +41,7 @@ interface TraceEntry {
 }
 
 type RealApiScenario = "uniform" | "all-strong" | "all-weak" | "random" | "strong-human-vs-weak-ai" | "weak-human-vs-strong-ai";
-type ModelTier = "strong" | "weak" | "uniform";
+type ModelTier = RealApiTraceModelTier;
 
 interface ScenarioConfig {
   strongModel: string;
@@ -64,6 +65,7 @@ maybeDescribe("manual real API full-game smoke", () => {
     const includeTrace = process.env.AVALON_REAL_API_INCLUDE_TRACE !== "0";
     const includeRawModelContent = process.env.AVALON_REAL_API_INCLUDE_RAW === "1";
     const streamSteps = process.env.AVALON_REAL_API_STREAM === "1";
+    const outputPath = process.env.AVALON_REAL_API_OUTPUT?.trim();
     const maxSteps = readPositiveInt("AVALON_REAL_API_MAX_STEPS", 180);
     const baseSeed = readPositiveInt("AVALON_REAL_API_SEED", Date.now() % 1_000_000);
 
@@ -87,7 +89,8 @@ maybeDescribe("manual real API full-game smoke", () => {
         expect(result.final.winner).toMatch(/good|evil/);
         expect(result.steps).toBeLessThan(180);
 
-        const fallbackCount = result.trace.filter((entry) => entry.source === "fallback").length;
+        const diagnostics = summarizeRealApiTrace(result.trace);
+        const fallbackCount = diagnostics.fallbackCount;
         const simulatedUser = result.final.players[humanSeat];
         const simulatedUserWon = result.final.winner === simulatedUser.allegiance;
         const modelAssignments = result.final.players.map((player) => ({
@@ -98,7 +101,7 @@ maybeDescribe("manual real API full-game smoke", () => {
           isSimulatedUser: player.id === simulatedUser.id,
           ...modelProfileForPlayer(scenario, scenarioConfig, simulatedUser.id, player.id, seed)
         }));
-        process.stdout.write(`\nAVALON_REAL_API_RESULT ${JSON.stringify({
+        const report = {
           scenario,
           game: gameIndex + 1,
           playerCount,
@@ -118,10 +121,16 @@ maybeDescribe("manual real API full-game smoke", () => {
           successes: getSuccessfulQuestCount(result.final),
           failures: getFailedQuestCount(result.final),
           steps: result.steps,
-          modelActions: result.trace.length - fallbackCount,
+          modelActions: diagnostics.modelActions,
+          localActions: diagnostics.localActions,
           fallbackCount,
+          diagnostics,
           trace: includeTrace ? result.trace : undefined
-        })}\n`);
+        };
+        process.stdout.write(`\nAVALON_REAL_API_RESULT ${JSON.stringify(report)}\n`);
+        if (outputPath) {
+          appendRealApiResultJsonl(outputPath, report);
+        }
       }
     }
   }, realApiTimeoutMs);

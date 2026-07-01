@@ -62,7 +62,7 @@ export type AiSpeechRepairReason =
   | "quest-card-speech";
 
 export interface AiDecisionResult extends AiDecision {
-  source: "model" | "fallback";
+  source: "model" | "fallback" | "local";
   fallbackReason?: AiFallbackReason;
   fallbackDetail?: AiFallbackDetail;
   speechRepairReason?: AiSpeechRepairReason;

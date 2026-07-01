@@ -97,6 +97,10 @@ export function getDefaultRoles(playerCount: number): RoleDefinition[] {
 
 export function createInitialGame(options: CreateGameOptions): GameState {
   const humanSeat = options.humanSeat ?? 0;
+  if (!QUEST_TABLE[options.playerCount]) {
+    throw new Error("Avalon supports 5-10 players");
+  }
+
   const roleLineup = options.roles ?? shuffle(DEFAULT_ROLE_LINEUPS[options.playerCount], options.seed ?? 1);
 
   if (!roleLineup || roleLineup.length !== options.playerCount) {
@@ -237,6 +241,9 @@ export function assassinateMerlin(state: GameState, assassinId: string, targetId
   if (state.phase !== "assassination") {
     throw new Error("Assassination is only available after three successful quests");
   }
+  if (getSuccessfulQuestCount(state) < 3) {
+    throw new Error("Assassination is only available after three successful quests");
+  }
 
   const assassin = requirePlayer(state, assassinId);
   const target = requirePlayer(state, targetId);
@@ -245,6 +252,9 @@ export function assassinateMerlin(state: GameState, assassinId: string, targetId
   }
   if (assassin.id === target.id) {
     throw new Error("The Assassin cannot target themself");
+  }
+  if (target.allegiance !== "good") {
+    throw new Error("The Assassin must name a good player as Merlin");
   }
 
   return {

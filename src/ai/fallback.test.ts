@@ -24,7 +24,12 @@ describe("AI fallback decisions", () => {
     const state = createInitialGame({
       playerCount: 5,
       roles: ["merlin", "percival", "loyal", "assassin", "morgana"],
-      phase: "assassination"
+      phase: "assassination",
+      questResults: [
+        { teamIds: ["p1", "p2"], failCards: 0, succeeded: true },
+        { teamIds: ["p1", "p3", "p4"], failCards: 0, succeeded: true },
+        { teamIds: ["p2", "p3"], failCards: 0, succeeded: true }
+      ]
     });
 
     expect(chooseFallbackDecision(state, "p4", "assassinate").action).toEqual({ type: "assassinate", targetId: "p1" });
@@ -43,6 +48,25 @@ describe("AI fallback decisions", () => {
     });
 
     expect(chooseFallbackDecision(state, "p2", "assassinate").action).toEqual({ type: "assassinate", targetId: "p5" });
+  });
+
+  it("assassin fallback never targets hidden evil players", () => {
+    const state = createInitialGame({
+      playerCount: 10,
+      roles: ["merlin", "percival", "loyal", "loyal", "loyal", "loyal", "assassin", "morgana", "mordred", "oberon"],
+      phase: "assassination",
+      questResults: [
+        { teamIds: ["p10", "p1", "p2"], failCards: 0, succeeded: true },
+        { teamIds: ["p10", "p3", "p4", "p5"], failCards: 0, succeeded: true },
+        { teamIds: ["p10", "p6", "p1", "p2"], failCards: 0, succeeded: true }
+      ]
+    });
+
+    const action = chooseFallbackDecision(state, "p7", "assassinate").action;
+    if (action.type !== "assassinate") {
+      throw new Error("Expected assassination fallback action");
+    }
+    expect(state.players.find((player) => player.id === action.targetId)?.allegiance).toBe("good");
   });
 
   it("has Merlin avoid known evil players when proposing a team", () => {

@@ -22,7 +22,7 @@ describe("AI prompt private information", () => {
     expect(prompt).not.toContain("KE=p4,p5,p6,p7");
     expect(prompt).toContain("SELF id=p1 seat=1 role=merlin side=good");
     expect(prompt).not.toContain("label=Merlin");
-    expect(prompt).toContain("RW mordred_hidden; subtle_good; assassin_cover");
+    expect(prompt).toContain("RW mh;subtle;cover_asn");
   });
 
   it("shows Percival ambiguous Merlin candidates without asserting which is real", () => {
@@ -36,7 +36,7 @@ describe("AI prompt private information", () => {
     }).messages.map((message) => message.content).join("\n");
 
     expect(prompt).toContain("MC=p1,p5");
-    expect(prompt).toContain("RW mc_uncertain; cover_merlin");
+    expect(prompt).toContain("RW mc?;cover_m");
   });
 
   it("does not leak hidden roles to Loyal Servants", () => {
@@ -51,7 +51,7 @@ describe("AI prompt private information", () => {
 
     expect(prompt).toContain("KE=-");
     expect(prompt).toContain("MC=-");
-    expect(prompt).toContain("RW public_only; infer_votes_quests");
+    expect(prompt).toContain("RW pub;infer_vq");
     expect(prompt).not.toContain("p4=Assassin");
     expect(prompt).not.toContain("p5=Morgana");
   });
@@ -102,6 +102,30 @@ describe("AI prompt public vote information", () => {
     expect(prompt).toContain("QC=1/2:hidden");
     expect(prompt).not.toContain("p1:success");
   });
+
+  it("summarizes revealed approve and reject votes accurately after voting resolves", () => {
+    let state = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"]
+    });
+    state = proposeTeam(state, "p1", ["p1", "p2"]);
+    state = castVote(state, "p1", true);
+    state = castVote(state, "p2", true);
+    state = castVote(state, "p3", false);
+    state = castVote(state, "p4", false);
+    state = castVote(state, "p5", true);
+
+    const prompt = buildAIPrompt({
+      state,
+      playerId: "p1",
+      actionKind: "quest",
+      legalActions: [{ type: "quest", card: "success" }],
+      persona: createPersona("p1", 5),
+      reasoningEffort: "medium"
+    }).messages.map((message) => message.content).join("\n");
+
+    expect(prompt).toContain("V=p1:A,p2:A,p3:R,p4:R,p5:A");
+  });
 });
 
 describe("AI prompt public talk order", () => {
@@ -124,7 +148,7 @@ describe("AI prompt public talk order", () => {
       reasoningEffort: "medium"
     }).messages.map((message) => message.content).join("\n");
 
-    expect(prompt).toContain("TT oldest>newest");
+    expect(prompt).toContain("TT o>n");
     expect(prompt).toContain("1|p1|I trust p2 first.");
     expect(prompt).toContain("2|p2|That trust came too early.");
     expect(prompt).not.toContain("|AI 1|");
@@ -153,7 +177,7 @@ describe("AI prompt token budget", () => {
     }).messages[0].content;
 
     expect(first).toBe(second);
-    expect(first.length).toBeLessThan(170);
+    expect(first.length).toBeLessThan(130);
   });
 
   it("summarizes proposal legality without enumerating every team combination", () => {
@@ -191,8 +215,11 @@ describe("AI prompt token budget", () => {
     expect(prompt).not.toContain("Private information:");
     expect(prompt).not.toContain("Public game state:");
     expect(prompt).not.toContain("Role strategy:");
+    expect(prompt).not.toContain("consistent_public_reads");
+    expect(prompt).not.toContain("protect_merlinish");
     expect(prompt).toContain("No public role words");
-    expect(prompt).toContain("OUT ");
+    expect(prompt).not.toContain("\"s\":\"pub<=160\"");
+    expect(prompt).toContain("OUT {\"s\":\"I like this test.\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} exact n=5");
     expect(prompt.length).toBeLessThan(800);
   });
 });
@@ -243,6 +270,10 @@ describe("AI response parsing", () => {
       speech: "Fallback",
       action: { type: "vote", approve: false }
     })).toEqual({ speech: "Team looks balanced; voting yes.", action: { type: "vote", approve: true }, source: "model" });
+    expect(parseAiDecision('{"s":"I support the proposed team.","a":{"v":"t","ok":1}}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: false }
+    })).toEqual({ speech: "I support the proposed team.", action: { type: "vote", approve: true }, source: "model" });
     expect(parseAiDecision('{"a":{"t":"v","ok":1}}', legalVotes, {
       speech: "Fallback",
       action: { type: "vote", approve: false }
@@ -307,6 +338,29 @@ describe("AI response parsing", () => {
     });
   });
 
+  it("accepts speech-only JSON only when exactly one legal action exists", () => {
+    expect(parseAiDecision('{"s":"q success"}', [{ type: "quest", card: "success" }], {
+      speech: "Fallback quest speech.",
+      action: { type: "quest", card: "success" }
+    })).toEqual({
+      speech: "Fallback quest speech.",
+      action: { type: "quest", card: "success" },
+      source: "model",
+      speechRepairReason: "quest-card-speech"
+    });
+
+    expect(parseAiDecision('{"s":"I am good with this."}', [{ type: "quest", card: "success" }, { type: "quest", card: "fail" }], {
+      speech: "Fallback quest speech.",
+      action: { type: "quest", card: "success" }
+    })).toEqual({
+      speech: "Fallback quest speech.",
+      action: { type: "quest", card: "success" },
+      source: "fallback",
+      fallbackReason: "invalid-json",
+      fallbackDetail: "invalid-decision-shape"
+    });
+  });
+
   it("repairs unsafe or low-quality public speech while keeping legal model actions", () => {
     const fallback = { speech: "Safe fallback speech.", action: { type: "vote" as const, approve: false } };
 
@@ -326,6 +380,12 @@ describe("AI response parsing", () => {
       speechRepairReason: "schema-echo"
     });
     expect(parseAiDecision('{"s":"pub<=160","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "schema-echo"
+    });
+    expect(parseAiDecision('{"s":"vote why","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
       speech: "This team is acceptable for now.",
       action: { type: "vote", approve: true },
       source: "model",
@@ -386,6 +446,11 @@ describe("AI response parsing", () => {
       action: { type: "vote", approve: true },
       source: "model"
     });
+    expect(parseAiDecision('{"s":"Approve: Q1 had no fails with p2+p4, and adding leader p3 is a reasonable low-change test. Rejecting feels like churn.","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "Approve: Q1 had no fails with p2+p4, and adding leader p3 is a reasonable low-change test. Rejecting feels like churn.",
+      action: { type: "vote", approve: true },
+      source: "model"
+    });
     expect(parseAiDecision('{"s":"Looks reasonable; voting yes.","a":{"t":"v","ok":false}}', legalVotes, {
       speech: "This team is acceptable for now.",
       action: { type: "vote", approve: true }
@@ -394,6 +459,11 @@ describe("AI response parsing", () => {
       action: { type: "vote", approve: false },
       source: "model",
       speechRepairReason: "action-mismatch"
+    });
+    expect(parseAiDecision('{"s":"Reject: Q1 failed on p1+p3; adding p1 back is unnecessary, and the quick approve cluster on p2/p4 does not lower risk.","a":{"t":"v","ok":0}}', legalVotes, fallback)).toEqual({
+      speech: "Reject: Q1 failed on p1+p3; adding p1 back is unnecessary, and the quick approve cluster on p2/p4 does not lower risk.",
+      action: { type: "vote", approve: false },
+      source: "model"
     });
   });
 

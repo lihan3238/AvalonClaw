@@ -28,6 +28,11 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
   const language = input.body.language ?? "en";
   const fallback = chooseFallbackDecision(input.body.state, input.body.playerId, input.body.actionKind, language);
   const legalActions = input.body.legalActions.length ? input.body.legalActions : [fallback.action];
+  const localDecision = chooseLocalDecision(input.body.actionKind, legalActions, fallback);
+  if (localDecision) {
+    return localDecision;
+  }
+
   const config = input.config ?? readOpenAIConfigFromEnv();
   const effectiveConfig = {
     ...config,
@@ -66,6 +71,17 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
       fallbackReason: error instanceof OpenAICompatibleError ? error.fallbackReason : "api-error"
     };
   }
+}
+
+function chooseLocalDecision(actionKind: AiActionKind, legalActions: LegalAction[], fallback: { speech: string }): AiDecisionResult | null {
+  if (actionKind === "quest" && legalActions.length === 1 && legalActions[0].type === "quest") {
+    return {
+      speech: fallback.speech,
+      action: legalActions[0],
+      source: "local"
+    };
+  }
+  return null;
 }
 
 export async function handleAiActionRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
