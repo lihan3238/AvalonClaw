@@ -95,7 +95,7 @@ export function buildAIPrompt(input: BuildPromptInput): { messages: ChatMessage[
   const system = [
     "AVALON_AGENT_V6.",
     "Pick legal LA.",
-    "s<=160 public; no hidden role/side/card/certainty; no role words.",
+    "s<=160 public; s!=ok/v/yes; no hidden role/side/card/certainty; no role words.",
     "JSON."
   ].join(" ");
 
@@ -282,9 +282,12 @@ function isSchemaEcho(speech: string): boolean {
 
 function isLowInformationSpeech(speech: string): boolean {
   const normalized = speech.toLowerCase().replace(/\s+/gu, " ").trim();
-  return normalized.length < 8
-    || normalized === "vote yes"
-    || normalized === "vote no"
+  const bare = normalized.replace(/[.!?]+$/u, "");
+  return bare.length < 8
+    || bare === "vote yes"
+    || bare === "vote no"
+    || bare === "proceed with the vote"
+    || bare === "proceed with vote"
     || normalized === "approve"
     || normalized === "reject"
     || /^(?:p\d+\s*[,;+ ]\s*)+p\d+$/iu.test(normalized);

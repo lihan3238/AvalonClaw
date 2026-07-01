@@ -246,6 +246,7 @@ describe("AI prompt token budget", () => {
     expect(prompt).not.toContain("Role strategy:");
     expect(prompt).not.toContain("consistent_public_reads");
     expect(prompt).not.toContain("protect_merlinish");
+    expect(prompt).toContain("s!=ok/v/yes");
     expect(prompt).toContain("no role words");
     expect(prompt).not.toContain("\"s\":\"pub<=160\"");
     expect(prompt).not.toContain("\"s\":\"<reason>\"");
@@ -308,11 +309,11 @@ describe("AI response parsing", () => {
     expect(parseAiDecision('{"s":"Approve.","a":{"t":"v","ok":true}}', legalVotes, {
       speech: "Fallback",
       action: { type: "vote", approve: false }
-    })).toEqual({ speech: "Approve.", action: { type: "vote", approve: true }, source: "model" });
+    })).toEqual({ speech: "This team is acceptable for now.", action: { type: "vote", approve: true }, source: "model", speechRepairReason: "low-information" });
     expect(parseAiDecision('{"s":"Approve.","a":{"t":"v","ok":1}}', legalVotes, {
       speech: "Fallback",
       action: { type: "vote", approve: false }
-    })).toEqual({ speech: "Approve.", action: { type: "vote", approve: true }, source: "model" });
+    })).toEqual({ speech: "This team is acceptable for now.", action: { type: "vote", approve: true }, source: "model", speechRepairReason: "low-information" });
     expect(parseAiDecision('{"speech":"I want a cleaner proposal.","action":{"type":"vote","approve":"reject"}}', legalVotes, {
       speech: "Fallback",
       action: { type: "vote", approve: true }
@@ -445,6 +446,18 @@ describe("AI response parsing", () => {
       action: { type: "vote", approve: true },
       source: "model",
       speechRepairReason: "schema-echo"
+    });
+    expect(parseAiDecision('{"s":"Vote yes.","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "low-information"
+    });
+    expect(parseAiDecision('{"s":"Proceed with the vote.","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "low-information"
     });
     expect(parseAiDecision('{"s":"I can back this.","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
       speech: "This team is acceptable for now.",
