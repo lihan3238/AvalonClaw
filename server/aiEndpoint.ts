@@ -95,11 +95,18 @@ export function effectiveReasoningEffortForAction(actionKind: AiActionKind, requ
   return requested;
 }
 
-function chooseLocalDecision(actionKind: AiActionKind, legalActions: LegalAction[], fallback: { speech: string }): AiDecisionResult | null {
-  if (actionKind === "quest" && legalActions.length === 1 && legalActions[0].type === "quest") {
+function chooseLocalDecision(actionKind: AiActionKind, legalActions: LegalAction[], fallback: { speech: string; action: LegalAction }): AiDecisionResult | null {
+  if (actionKind === "quest") {
+    const fallbackQuestAction = fallback.action.type === "quest" ? fallback.action : undefined;
+    const legalQuestAction = fallbackQuestAction
+      ? legalActions.find((action) => action.type === "quest" && action.card === fallbackQuestAction.card)
+      : legalActions.find((action) => action.type === "quest");
+    if (!legalQuestAction) {
+      return null;
+    }
     return {
       speech: fallback.speech,
-      action: legalActions[0],
+      action: legalQuestAction,
       source: "local"
     };
   }

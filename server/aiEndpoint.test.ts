@@ -1,5 +1,5 @@
 import { castVote, createInitialGame, proposeTeam } from "../src/game/rules";
-import { createAiActionResult } from "./aiEndpoint";
+import { createAiActionResult, effectiveReasoningEffortForAction } from "./aiEndpoint";
 import type { OpenAICompatibleConfig } from "./env";
 
 describe("AI endpoint orchestration", () => {
@@ -59,9 +59,6 @@ describe("AI endpoint orchestration", () => {
         new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"Approve.\",\"a\":{\"t\":\"v\",\"ok\":1}}" } }] }), { status: 200 })
       )
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"Resolving.\",\"a\":{\"t\":\"q\",\"c\":\"fail\"}}" } }] }), { status: 200 })
-      )
-      .mockResolvedValueOnce(
         new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"This read fits.\",\"a\":{\"t\":\"as\",\"id\":\"p1\"}}" } }] }), { status: 200 })
       );
     let questState = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
@@ -81,7 +78,7 @@ describe("AI endpoint orchestration", () => {
       config,
       fetchImpl
     });
-    await createAiActionResult({
+    const questResult = await createAiActionResult({
       body: {
         state: questState,
         playerId: "p4",
@@ -119,17 +116,17 @@ describe("AI endpoint orchestration", () => {
     });
 
     const voteBody = JSON.parse(fetchImpl.mock.calls[0][1].body);
-    const questBody = JSON.parse(fetchImpl.mock.calls[1][1].body);
-    const assassinateBody = JSON.parse(fetchImpl.mock.calls[2][1].body);
+    const assassinateBody = JSON.parse(fetchImpl.mock.calls[1][1].body);
     expect(voteBody.reasoning_effort).toBe("medium");
     expect(voteBody.messages[1].content).toContain("A=v R=m:");
-    expect(questBody.reasoning_effort).toBe("low");
-    expect(questBody.messages[1].content).toContain("A=q R=l:");
+    expect(questResult).toMatchObject({ source: "local", action: { type: "quest", card: "fail" } });
+    expect(effectiveReasoningEffortForAction("quest", "high")).toBe("low");
     expect(assassinateBody.reasoning_effort).toBe("medium");
     expect(assassinateBody.messages[1].content).toContain("A=as R=m:");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("resolves a single legal quest card locally without spending an API call", async () => {
+  it("resolves quest cards locally without spending an API call", async () => {
     const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
     const fetchImpl = vi.fn();
     let questState = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
@@ -151,6 +148,21 @@ describe("AI endpoint orchestration", () => {
     });
 
     expect(result).toMatchObject({ source: "local", action: { type: "quest", card: "success" } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const evilResult = await createAiActionResult({
+      body: {
+        state: questState,
+        playerId: "p4",
+        actionKind: "quest",
+        legalActions: [{ type: "quest", card: "success" }, { type: "quest", card: "fail" }],
+        reasoningEffort: "high"
+      },
+      config,
+      fetchImpl
+    });
+
+    expect(evilResult).toMatchObject({ source: "local", action: { type: "quest", card: "fail" } });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

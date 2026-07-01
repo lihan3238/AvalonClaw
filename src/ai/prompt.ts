@@ -275,6 +275,7 @@ function isSchemaEcho(speech: string): boolean {
   const normalized = speech.toLowerCase().replace(/\s+/gu, " ").trim();
   return /<=\s*\d+\s*(?:chars?\s*)?public/iu.test(speech)
     || /\bpub\s*<=\s*\d+\b/iu.test(speech)
+    || /\bown[_\s-]*public[_\s-]*reason\b/iu.test(speech)
     || /\b(true\|false|success\|fail|pX)\b/u.test(speech)
     || ["<reason>", "why team", "vote why", "target read", "resolve", "i can back this.", "i can't back this.", "i like this test."].includes(normalized);
 }
@@ -485,15 +486,15 @@ function summarizeLegalActions(legalActions: LegalAction[]): string {
 function outputContract(actionKind: AiActionKind, legalActions: LegalAction[]): string {
   if (actionKind === "proposeTeam") {
     const size = legalActions.find((action) => action.type === "proposeTeam")?.teamIds.length ?? "?";
-    return `OUT {\"s\":\"x\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} n=${size}`;
+    return `OUT JSON s=own_public_reason a={\"t\":\"pt\",\"ids\":[\"pX\"]} n=${size}`;
   }
   if (actionKind === "vote") {
-    return "OUT {\"s\":\"x\",\"a\":{\"t\":\"v\",\"ok\":1}} 0=reject";
+    return "OUT JSON s=own_public_reason a={\"t\":\"v\",\"ok\":1} 0=reject";
   }
   if (actionKind === "quest") {
-    return "OUT {\"s\":\"x\",\"a\":{\"t\":\"q\",\"c\":\"success\"}} fail iff LA";
+    return "OUT JSON s=own_public_reason a={\"t\":\"q\",\"c\":\"success\"} fail iff LA";
   }
-  return "OUT {\"s\":\"x\",\"a\":{\"t\":\"as\",\"id\":\"pX\"}} id=LA";
+  return "OUT JSON s=own_public_reason a={\"t\":\"as\",\"id\":\"pX\"} id=LA";
 }
 
 function compactList(ids: string[]): string {

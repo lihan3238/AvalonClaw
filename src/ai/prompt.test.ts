@@ -249,7 +249,8 @@ describe("AI prompt token budget", () => {
     expect(prompt).toContain("no role words");
     expect(prompt).not.toContain("\"s\":\"pub<=160\"");
     expect(prompt).not.toContain("\"s\":\"<reason>\"");
-    expect(prompt).toContain("OUT {\"s\":\"x\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} n=5");
+    expect(prompt).not.toContain("\"s\":\"x\"");
+    expect(prompt).toContain("OUT JSON s=own_public_reason a={\"t\":\"pt\",\"ids\":[\"pX\"]} n=5");
     expect(prompt.length).toBeLessThan(520);
   });
 
@@ -451,6 +452,12 @@ describe("AI response parsing", () => {
       speechRepairReason: "schema-echo"
     });
     expect(parseAiDecision('{"s":"<reason>","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "schema-echo"
+    });
+    expect(parseAiDecision('{"s":"own_public_reason","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
       speech: "This team is acceptable for now.",
       action: { type: "vote", approve: true },
       source: "model",
