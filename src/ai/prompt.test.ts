@@ -250,7 +250,8 @@ describe("AI prompt token budget", () => {
     expect(prompt).not.toContain("\"s\":\"pub<=160\"");
     expect(prompt).not.toContain("\"s\":\"<reason>\"");
     expect(prompt).not.toContain("\"s\":\"x\"");
-    expect(prompt).toContain("OUT JSON s=own_public_reason a={\"t\":\"pt\",\"ids\":[\"pX\"]} n=5");
+    expect(prompt).not.toContain("own_public_reason");
+    expect(prompt).toContain("OUT JSON keys=s,a a={\"t\":\"pt\",\"ids\":[\"pX\"]} n=5");
     expect(prompt.length).toBeLessThan(520);
   });
 

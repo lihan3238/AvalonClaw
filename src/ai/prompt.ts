@@ -486,15 +486,15 @@ function summarizeLegalActions(legalActions: LegalAction[]): string {
 function outputContract(actionKind: AiActionKind, legalActions: LegalAction[]): string {
   if (actionKind === "proposeTeam") {
     const size = legalActions.find((action) => action.type === "proposeTeam")?.teamIds.length ?? "?";
-    return `OUT JSON s=own_public_reason a={\"t\":\"pt\",\"ids\":[\"pX\"]} n=${size}`;
+    return `OUT JSON keys=s,a a={\"t\":\"pt\",\"ids\":[\"pX\"]} n=${size}`;
   }
   if (actionKind === "vote") {
-    return "OUT JSON s=own_public_reason a={\"t\":\"v\",\"ok\":1} 0=reject";
+    return "OUT JSON keys=s,a a={\"t\":\"v\",\"ok\":1} 0=reject";
   }
   if (actionKind === "quest") {
-    return "OUT JSON s=own_public_reason a={\"t\":\"q\",\"c\":\"success\"} fail iff LA";
+    return "OUT JSON keys=s,a a={\"t\":\"q\",\"c\":\"success\"} fail iff LA";
   }
-  return "OUT JSON s=own_public_reason a={\"t\":\"as\",\"id\":\"pX\"} id=LA";
+  return "OUT JSON keys=s,a a={\"t\":\"as\",\"id\":\"pX\"} id=LA";
 }
 
 function compactList(ids: string[]): string {
