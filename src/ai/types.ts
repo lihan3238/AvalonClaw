@@ -59,6 +59,7 @@ export type AiSpeechRepairReason =
   | "schema-echo"
   | "low-information"
   | "action-mismatch"
+  | "overlong-speech"
   | "quest-card-speech";
 
 export interface AiDecisionResult extends AiDecision {

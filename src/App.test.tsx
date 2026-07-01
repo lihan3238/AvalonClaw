@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { beforeEach, vi } from "vitest";
 import App from "./App";
 import { createInitialGame } from "./game/rules";
+import type { GameState } from "./game/types";
 
 function pendingResponse() {
   let resolve!: (value: Response) => void;
@@ -9,6 +10,22 @@ function pendingResponse() {
     resolve = next;
   });
   return { promise, resolve };
+}
+
+function saveSession(id: string, game: GameState) {
+  localStorage.setItem("avalon-claw:sessions:v1", JSON.stringify({
+    [id]: {
+      id,
+      game,
+      selectedTeam: [],
+      log: [],
+      tableTalk: [],
+      language: "zh",
+      reasoningEffort: "medium",
+      model: "gpt-5.4-mini",
+      updatedAt: 1
+    }
+  }));
 }
 
 describe("Avalon app", () => {
@@ -304,9 +321,79 @@ describe("Avalon app", () => {
     fireEvent.change(screen.getByLabelText(/你的座位/), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: /开始游戏|Start game/i }));
 
-    await waitFor(() => expect(screen.getByText(/AI 1 没有给出可用行动，已使用本地兜底。/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/AI 1 网络请求失败，已使用本地兜底。/)).toBeInTheDocument());
     expect(screen.getAllByText(/本地兜底/).length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/AI 1 没有给出可用行动/)[0].closest("p")).toHaveClass("warning");
+    expect(screen.getAllByText(/AI 1 网络请求失败/)[0].closest("p")).toHaveClass("warning");
+  });
+
+  it("shows a specific player-friendly reason when the AI endpoint falls back", async () => {
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(JSON.stringify({
+      source: "fallback",
+      fallbackReason: "api-timeout",
+      speech: "I will keep this team straightforward and readable.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
+    }), { status: 200, headers: { "Content-Type": "application/json" } }))));
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/你的座位/), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: /开始游戏|Start game/i }));
+
+    await waitFor(() => expect(screen.getAllByText(/AI 1 超时了，已使用本地兜底。/).length).toBeGreaterThan(0));
+    expect(screen.getAllByText(/AI 1 超时了，已使用本地兜底。/)[0].closest("p")).toHaveClass("warning");
+  });
+
+  it("only shows good players as human Assassin targets", () => {
+    const game = createInitialGame({
+      playerCount: 5,
+      humanSeat: 3,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"],
+      phase: "assassination",
+      questResults: [
+        { teamIds: ["p1", "p2"], failCards: 0, succeeded: true },
+        { teamIds: ["p1", "p2", "p3"], failCards: 0, succeeded: true },
+        { teamIds: ["p1", "p3"], failCards: 0, succeeded: true }
+      ]
+    });
+    saveSession("AV-20260701-ASSASSIN", game);
+
+    render(<App />);
+
+    fireEvent.click(screen.getByRole("button", { name: /AV-20260701-ASSASSIN/ }));
+
+    expect(screen.getByRole("button", { name: /^AI 1$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^AI 2$/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^AI 3$/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^AI 5$/ })).not.toBeInTheDocument();
+  });
+
+  it("does not let a stale second human vote overwrite the first vote", async () => {
+    const delayed = pendingResponse();
+    vi.stubGlobal("fetch", vi.fn(() => delayed.promise));
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/你的座位/), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: /开始游戏|Start game/i }));
+    fireEvent.click(screen.getByRole("button", { name: /AI 2/ }));
+    fireEvent.click(screen.getByRole("button", { name: /提交队伍/ }));
+
+    const approve = screen.getByRole("button", { name: /同意/ });
+    const reject = screen.getByRole("button", { name: /拒绝/ });
+    fireEvent.click(approve);
+    fireEvent.click(reject);
+
+    expect(screen.getByText(/投票已提交：1\/5/)).toBeInTheDocument();
+
+    delayed.resolve(new Response(JSON.stringify({
+      source: "model",
+      speech: "同意。",
+      action: { type: "vote", approve: true }
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    await delayed.promise;
+
+    await waitFor(() => expect(screen.getByText(/p1: 同意/)).toBeInTheDocument());
+    expect(screen.queryByText(/p1: 拒绝/)).not.toBeInTheDocument();
   });
 
   it("shows one entertaining AI epilogue line for each AI after game over", () => {

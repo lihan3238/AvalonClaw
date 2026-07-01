@@ -153,6 +153,34 @@ describe("AI prompt public talk order", () => {
     expect(prompt).toContain("2|p2|That trust came too early.");
     expect(prompt).not.toContain("|AI 1|");
   });
+
+  it("bounds each table talk row while preserving chronological row labels", () => {
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"]
+    });
+    const longSpeech = `opening read ${"steady ".repeat(40)}tail-marker`;
+
+    const prompt = buildAIPrompt({
+      state,
+      playerId: "p3",
+      actionKind: "vote",
+      legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+      tableTalk: [
+        { id: 1, speakerId: "p1", speakerName: "AI 1", text: longSpeech },
+        { id: 2, speakerId: "p2", speakerName: "AI 2", text: "second line\nkeeps order" }
+      ],
+      persona: createPersona("p3", 5),
+      reasoningEffort: "medium"
+    }).messages.map((message) => message.content).join("\n");
+
+    const talkRows = prompt.split("\n").filter((line) => /^\d+\|p\d+\|/u.test(line));
+    expect(talkRows).toHaveLength(2);
+    expect(talkRows[0]).toMatch(/^1\|p1\|opening read/u);
+    expect(talkRows[0]).not.toContain("tail-marker");
+    expect(talkRows[0].length).toBeLessThanOrEqual(189);
+    expect(talkRows[1]).toBe("2|p2|second line keeps order");
+  });
 });
 
 describe("AI prompt token budget", () => {
@@ -219,7 +247,7 @@ describe("AI prompt token budget", () => {
     expect(prompt).not.toContain("protect_merlinish");
     expect(prompt).toContain("No public role words");
     expect(prompt).not.toContain("\"s\":\"pub<=160\"");
-    expect(prompt).toContain("OUT {\"s\":\"I like this test.\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} exact n=5");
+    expect(prompt).toContain("OUT {\"s\":\"<reason>\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} exact n=5");
     expect(prompt.length).toBeLessThan(800);
   });
 });
@@ -274,6 +302,10 @@ describe("AI response parsing", () => {
       speech: "Fallback",
       action: { type: "vote", approve: false }
     })).toEqual({ speech: "I support the proposed team.", action: { type: "vote", approve: true }, source: "model" });
+    expect(parseAiDecision('{"s":"I want one more check before locking the same core again; this feels too narrow for Q3.","a":{"t":"v","no":1}}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: true }
+    })).toEqual({ speech: "I want one more check before locking the same core again; this feels too narrow for Q3.", action: { type: "vote", approve: false }, source: "model" });
     expect(parseAiDecision('{"a":{"t":"v","ok":1}}', legalVotes, {
       speech: "Fallback",
       action: { type: "vote", approve: false }
@@ -391,6 +423,27 @@ describe("AI response parsing", () => {
       source: "model",
       speechRepairReason: "schema-echo"
     });
+    expect(parseAiDecision('{"s":"I can back this.","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "schema-echo"
+    });
+    expect(parseAiDecision('{"s":"<reason>","a":{"t":"v","ok":1}}', legalVotes, fallback)).toEqual({
+      speech: "This team is acceptable for now.",
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "schema-echo"
+    });
+    expect(parseAiDecision('{"s":"I like this test.","a":{"t":"pt","ids":["p1","p2"]}}', [{ type: "proposeTeam", teamIds: ["p1", "p2"] }], {
+      speech: "Safe proposal speech.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
+    })).toEqual({
+      speech: "Safe proposal speech.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] },
+      source: "model",
+      speechRepairReason: "schema-echo"
+    });
     expect(parseAiDecision('{"s":"v","a":{"t":"v","ok":true}}', legalVotes, fallback)).toEqual({
       speech: "This team is acceptable for now.",
       action: { type: "vote", approve: true },
@@ -406,6 +459,23 @@ describe("AI response parsing", () => {
       source: "model",
       speechRepairReason: "low-information"
     });
+  });
+
+  it("shortens overlong public speech while keeping a legal model action", () => {
+    const longSpeech = `Team has two prior outcomes: ${"clear public signal ".repeat(7)}so I can back this for now.`;
+
+    const decision = parseAiDecision(JSON.stringify({ s: longSpeech, a: { t: "v", ok: 1 } }), legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: false }
+    });
+
+    expect(decision).toMatchObject({
+      action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "overlong-speech"
+    });
+    expect(decision.speech.length).toBeLessThanOrEqual(160);
+    expect(decision.speech.endsWith("...")).toBe(true);
   });
 
   it("repairs public speech that contradicts the chosen vote action", () => {

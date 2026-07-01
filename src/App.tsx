@@ -1,7 +1,7 @@
 import { Crown, History, LogIn, MessageCircle, RotateCcw, ScrollText, Send, Shield, Sparkles, Swords, Users, Vote } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { requestAiAction } from "./ai/client";
-import type { AiActionKind, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./ai/types";
+import type { AiActionKind, AiDecisionResult, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./ai/types";
 import { getLegalActionsForPlayer } from "./game/legalActions";
 import {
   assassinateMerlin,
@@ -306,7 +306,7 @@ export default function App() {
       try {
         const nextGame = applyDecision(current, next.playerId, decision.action);
         if (decision.source === "fallback") {
-          appendLog(`${playerName(current, next.playerId)} ${copy[language].fallbackNotice}`, "warning");
+          appendLog(fallbackLogText(playerName(current, next.playerId), decision, language), "warning");
         }
         appendTableTalk(
           next.playerId,
@@ -769,7 +769,7 @@ function DecisionPanel(props: {
     return (
       <div className="decision-panel target-grid">
         <strong>{props.labels.chooseMerlin}</strong>
-        {props.game.players.filter((player) => player.id !== props.human?.id).map((player) => (
+        {props.game.players.filter((player) => player.allegiance === "good").map((player) => (
           <button key={player.id} className="secondary" onClick={() => props.onAssassinate(player.id)}>{player.name}</button>
         ))}
       </div>
@@ -970,6 +970,46 @@ function playerToneClassById(playerId: string): string {
 
 function playerName(game: GameState, playerId: string): string {
   return game.players.find((player) => player.id === playerId)?.name ?? playerId;
+}
+
+function fallbackLogText(name: string, decision: AiDecisionResult, language: TableLanguage): string {
+  if (language === "zh") {
+    if (decision.fallbackReason === "api-timeout") {
+      return `${name} 超时了，已使用本地兜底。`;
+    }
+    if (decision.fallbackReason === "missing-config") {
+      return `${name} 没有可用 API 配置，已使用本地兜底。`;
+    }
+    if (decision.fallbackReason === "network-error") {
+      return `${name} 网络请求失败，已使用本地兜底。`;
+    }
+    if (
+      decision.fallbackReason === "invalid-json"
+      || decision.fallbackReason === "illegal-action"
+      || decision.fallbackReason?.startsWith("api-")
+    ) {
+      return `${name} 的 AI 输出不可用，已使用本地兜底。`;
+    }
+    return `${name} ${copy.zh.fallbackNotice}`;
+  }
+
+  if (decision.fallbackReason === "api-timeout") {
+    return `${name} timed out; local fallback took over.`;
+  }
+  if (decision.fallbackReason === "missing-config") {
+    return `${name} has no usable API config; local fallback took over.`;
+  }
+  if (decision.fallbackReason === "network-error") {
+    return `${name} network request failed; local fallback took over.`;
+  }
+  if (
+    decision.fallbackReason === "invalid-json"
+    || decision.fallbackReason === "illegal-action"
+    || decision.fallbackReason?.startsWith("api-")
+  ) {
+    return `${name} returned unusable AI output; local fallback took over.`;
+  }
+  return `${name} ${copy.en.fallbackNotice}`;
 }
 
 function describePublicActionEvents(previous: GameState, next: GameState, playerId: string, action: LegalAction, language: TableLanguage): PublicLogEvent[] {

@@ -3,6 +3,9 @@ import { getRoleKnowledge } from "../game/rules";
 import type { GameState, Player } from "../game/types";
 import type { AiActionKind, AiDecision, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiSpeechRepairReason, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
 
+const MAX_PUBLIC_SPEECH_CHARS = 160;
+const MAX_TABLE_TALK_CHARS = 180;
+
 interface BuildPromptInput {
   state: GameState;
   playerId: string;
@@ -26,9 +29,10 @@ const decisionSchema = z.object({
   action: actionSchema
 });
 
-const compactActionSchema = z.discriminatedUnion("t", [
+const compactActionSchema = z.union([
   z.object({ t: z.literal("pt"), ids: z.array(z.string()).min(1) }),
-  z.object({ t: z.literal("v"), ok: voteChoiceSchema() }),
+  z.object({ t: z.literal("v"), ok: voteChoiceSchema().optional(), no: voteChoiceSchema().optional() })
+    .refine((value) => value.ok !== undefined || value.no !== undefined),
   z.object({ t: z.literal("q"), c: z.enum(["success", "fail"]) }),
   z.object({ t: z.literal("as"), id: z.string() })
 ]);
@@ -226,24 +230,27 @@ function fallbackDecision(fallback: AiDecision, fallbackReason: AiFallbackReason
 }
 
 function repairPublicSpeech(speech: string, action: LegalAction, fallback: AiDecision): { speech: string; reason?: AiSpeechRepairReason } {
-  const trimmed = speech.trim();
+  const cleaned = compactWhitespace(speech);
   if (action.type === "quest") {
     return { speech: safeSpeechForAction(action, fallback), reason: "quest-card-speech" };
   }
-  if (hasUnsafePublicRoleWord(trimmed)) {
+  if (hasUnsafePublicRoleWord(cleaned)) {
     return { speech: safeSpeechForAction(action, fallback), reason: "unsafe-role-word" };
   }
-  if (isSchemaEcho(trimmed)) {
+  if (isSchemaEcho(cleaned)) {
     return { speech: safeSpeechForAction(action, fallback), reason: "schema-echo" };
   }
-  if (isLowInformationSpeech(trimmed)) {
+  if (isLowInformationSpeech(cleaned)) {
     return { speech: safeSpeechForAction(action, fallback), reason: "low-information" };
   }
-  if (contradictsVoteAction(trimmed, action)) {
+  if (contradictsVoteAction(cleaned, action)) {
     return { speech: safeSpeechForAction(action, fallback), reason: "action-mismatch" };
   }
+  if (cleaned.length > MAX_PUBLIC_SPEECH_CHARS) {
+    return { speech: clipText(cleaned, MAX_PUBLIC_SPEECH_CHARS), reason: "overlong-speech" };
+  }
 
-  return { speech: trimmed };
+  return { speech: cleaned };
 }
 
 function hasUnsafePublicRoleWord(speech: string): boolean {
@@ -255,7 +262,7 @@ function isSchemaEcho(speech: string): boolean {
   return /<=\s*\d+\s*(?:chars?\s*)?public/iu.test(speech)
     || /\bpub\s*<=\s*\d+\b/iu.test(speech)
     || /\b(true\|false|success\|fail|pX)\b/u.test(speech)
-    || ["why team", "vote why", "target read", "resolve"].includes(normalized);
+    || ["<reason>", "why team", "vote why", "target read", "resolve", "i can back this.", "i can't back this.", "i like this test."].includes(normalized);
 }
 
 function isLowInformationSpeech(speech: string): boolean {
@@ -356,7 +363,10 @@ function normalizeCompactAction(action: z.infer<typeof compactActionSchema> | z.
     return { type: "proposeTeam", teamIds: action.ids };
   }
   if (action.t === "v") {
-    return { type: "vote", approve: normalizeVoteChoice(action.ok) };
+    if (action.ok !== undefined) {
+      return { type: "vote", approve: normalizeVoteChoice(action.ok) };
+    }
+    return { type: "vote", approve: action.no !== undefined ? !normalizeVoteChoice(action.no) : false };
   }
   if (action.t === "q") {
     return { type: "quest", card: action.c };
@@ -421,8 +431,20 @@ function summarizeTableTalk(tableTalk: PublicTalkEntry[]): string {
   const recentTalk = tableTalk.slice(-12);
   return [
     "TT o>n",
-    ...recentTalk.map((entry, index) => `${index + 1}|${entry.speakerId}|${entry.text}`)
+    ...recentTalk.map((entry, index) => `${index + 1}|${entry.speakerId}|${compactTalkText(entry.text)}`)
   ].join("\n");
+}
+
+function compactTalkText(text: string): string {
+  return clipText(compactWhitespace(text), MAX_TABLE_TALK_CHARS);
+}
+
+function compactWhitespace(text: string): string {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
+function clipText(text: string, maxLength: number): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3).trimEnd()}...` : text;
 }
 
 function summarizeLegalActions(legalActions: LegalAction[]): string {
@@ -449,10 +471,10 @@ function summarizeLegalActions(legalActions: LegalAction[]): string {
 function outputContract(actionKind: AiActionKind, legalActions: LegalAction[]): string {
   if (actionKind === "proposeTeam") {
     const size = legalActions.find((action) => action.type === "proposeTeam")?.teamIds.length ?? "?";
-    return `OUT {\"s\":\"I like this test.\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} exact n=${size}`;
+    return `OUT {\"s\":\"<reason>\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} exact n=${size}`;
   }
   if (actionKind === "vote") {
-    return "OUT {\"s\":\"I can back this.\",\"a\":{\"t\":\"v\",\"ok\":1}} 0=reject";
+    return "OUT {\"s\":\"<reason>\",\"a\":{\"t\":\"v\",\"ok\":1}} 0=reject";
   }
   if (actionKind === "quest") {
     return "OUT {\"s\":\"Resolving.\",\"a\":{\"t\":\"q\",\"c\":\"success\"}} fail only if LA";
