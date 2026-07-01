@@ -1,5 +1,5 @@
 import { castVote, createInitialGame, proposeTeam, submitQuestCard } from "../game/rules";
-import { buildAIPrompt, createPersona, extractJsonObject, parseAiDecision } from "./prompt";
+import { buildAIPrompt, createPersona, extractJsonObject, measurePromptMessages, parseAiDecision } from "./prompt";
 import type { LegalAction } from "./types";
 
 describe("AI prompt private information", () => {
@@ -20,9 +20,9 @@ describe("AI prompt private information", () => {
 
     expect(prompt).toContain("KE=p4,p5,p7");
     expect(prompt).not.toContain("KE=p4,p5,p6,p7");
-    expect(prompt).toContain("SELF id=p1 seat=1 role=merlin side=good");
+    expect(prompt).toContain("ME p1@1 merlin good");
     expect(prompt).not.toContain("label=Merlin");
-    expect(prompt).toContain("RW mh;subtle;cover_asn");
+    expect(prompt).toContain("RW mh subtle coverA");
   });
 
   it("shows Percival ambiguous Merlin candidates without asserting which is real", () => {
@@ -36,7 +36,7 @@ describe("AI prompt private information", () => {
     }).messages.map((message) => message.content).join("\n");
 
     expect(prompt).toContain("MC=p1,p5");
-    expect(prompt).toContain("RW mc?;cover_m");
+    expect(prompt).toContain("RW mc? coverM");
   });
 
   it("does not leak hidden roles to Loyal Servants", () => {
@@ -51,7 +51,7 @@ describe("AI prompt private information", () => {
 
     expect(prompt).toContain("KE=-");
     expect(prompt).toContain("MC=-");
-    expect(prompt).toContain("RW pub;infer_vq");
+    expect(prompt).toContain("RW pub inferVQ");
     expect(prompt).not.toContain("p4=Assassin");
     expect(prompt).not.toContain("p5=Morgana");
   });
@@ -99,7 +99,7 @@ describe("AI prompt public vote information", () => {
       reasoningEffort: "medium"
     }).messages.map((message) => message.content).join("\n");
 
-    expect(prompt).toContain("QC=1/2:hidden");
+    expect(prompt).toContain("QC=1/2:*");
     expect(prompt).not.toContain("p1:success");
   });
 
@@ -238,6 +238,7 @@ describe("AI prompt token budget", () => {
     }).messages.map((message) => message.content).join("\n");
 
     expect(legalActions).toHaveLength(252);
+    expect(prompt).toContain("A=pt R=l:fast");
     expect(prompt).toContain("LA pt n=5 ids=p1,p2,p3,p4,p5,p6,p7,p8,p9,p10");
     expect(prompt).not.toContain(JSON.stringify(legalActions));
     expect(prompt).not.toContain("Private information:");
@@ -245,10 +246,30 @@ describe("AI prompt token budget", () => {
     expect(prompt).not.toContain("Role strategy:");
     expect(prompt).not.toContain("consistent_public_reads");
     expect(prompt).not.toContain("protect_merlinish");
-    expect(prompt).toContain("No public role words");
+    expect(prompt).toContain("no role words");
     expect(prompt).not.toContain("\"s\":\"pub<=160\"");
-    expect(prompt).toContain("OUT {\"s\":\"<reason>\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} exact n=5");
-    expect(prompt.length).toBeLessThan(800);
+    expect(prompt).not.toContain("\"s\":\"<reason>\"");
+    expect(prompt).toContain("OUT {\"s\":\"x\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} n=5");
+    expect(prompt.length).toBeLessThan(520);
+  });
+
+  it("measures prompt message character cost for real API trace diagnostics", () => {
+    const messages = buildAIPrompt({
+      state: createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] }),
+      playerId: "p1",
+      actionKind: "vote",
+      legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+      persona: createPersona("p1", 5),
+      reasoningEffort: "medium",
+      language: "zh"
+    }).messages;
+
+    expect(measurePromptMessages(messages)).toEqual({
+      messageCount: 2,
+      systemChars: messages[0].content.length,
+      userChars: messages[1].content.length,
+      totalChars: messages[0].content.length + messages[1].content.length
+    });
   });
 });
 

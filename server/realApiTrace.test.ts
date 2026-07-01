@@ -10,6 +10,8 @@ describe("real API trace diagnostics", () => {
         source: "model",
         actionKind: "vote",
         modelTier: "weak",
+        promptMetrics: { messageCount: 2, systemChars: 90, userChars: 240, totalChars: 330 },
+        apiUsage: { promptTokens: 120, completionTokens: 18, totalTokens: 138, cachedPromptTokens: 64 },
         speechRepairReason: "missing-speech"
       },
       {
@@ -18,6 +20,8 @@ describe("real API trace diagnostics", () => {
         modelTier: "weak",
         requestedReasoningEffort: "high",
         reasoningEffort: "medium",
+        promptMetrics: { messageCount: 2, systemChars: 90, userChars: 260, totalChars: 350 },
+        apiUsage: { promptTokens: 130, completionTokens: 17, totalTokens: 147, reasoningTokens: 6 },
         fallbackReason: "invalid-json",
         fallbackDetail: "invalid-decision-shape"
       },
@@ -47,6 +51,9 @@ describe("real API trace diagnostics", () => {
       fallbacksByModelTier: { weak: 1, strong: 1 },
       fallbacksByReasoningEffort: { medium: 1, high: 1 },
       fallbacksByRequestedReasoningEffort: { high: 2 },
+      promptChars: { count: 2, min: 330, max: 350, total: 680, average: 340 },
+      promptCharsByActionKind: { vote: { count: 2, min: 330, max: 350, total: 680, average: 340 } },
+      apiUsageTotals: { promptTokens: 250, completionTokens: 35, totalTokens: 285, cachedPromptTokens: 64, reasoningTokens: 6 },
       localByActionKind: { quest: 1 },
       speechRepairsByReason: { "missing-speech": 1 }
     });

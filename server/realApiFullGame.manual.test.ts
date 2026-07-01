@@ -13,7 +13,7 @@ import {
   proposeTeam,
   submitQuestCard
 } from "../src/game/rules";
-import type { AiActionKind, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiSpeechRepairReason, LegalAction, ReasoningEffort, TableLanguage } from "../src/ai/types";
+import type { AiActionKind, AiApiUsage, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiPromptMetrics, AiSpeechRepairReason, LegalAction, ReasoningEffort, TableLanguage } from "../src/ai/types";
 import type { GameState } from "../src/game/types";
 
 dotenv.config();
@@ -35,6 +35,8 @@ interface TraceEntry {
   fallbackReason?: AiFallbackReason;
   fallbackDetail?: AiFallbackDetail;
   speechRepairReason?: AiSpeechRepairReason;
+  promptMetrics?: AiPromptMetrics;
+  apiUsage?: AiApiUsage;
   rawModelContent?: string;
   modelTier: ModelTier;
   action: LegalAction;
@@ -191,6 +193,8 @@ async function playRealApiGame(input: {
       fallbackReason: decision.fallbackReason,
       fallbackDetail: decision.fallbackDetail,
       speechRepairReason: decision.speechRepairReason,
+      promptMetrics: decision.promptMetrics,
+      apiUsage: decision.apiUsage,
       rawModelContent: input.includeRawModelContent ? decision.rawModelContent : undefined,
       action: decision.action,
       speech: decision.speech

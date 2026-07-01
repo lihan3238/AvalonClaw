@@ -9,6 +9,21 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface AiPromptMetrics {
+  messageCount: number;
+  systemChars: number;
+  userChars: number;
+  totalChars: number;
+}
+
+export interface AiApiUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  cachedPromptTokens?: number;
+  reasoningTokens?: number;
+}
+
 export interface Persona {
   caution: number;
   aggression: number;
@@ -68,4 +83,6 @@ export interface AiDecisionResult extends AiDecision {
   fallbackDetail?: AiFallbackDetail;
   speechRepairReason?: AiSpeechRepairReason;
   rawModelContent?: string;
+  promptMetrics?: AiPromptMetrics;
+  apiUsage?: AiApiUsage;
 }

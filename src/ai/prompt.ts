@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getRoleKnowledge } from "../game/rules";
 import type { GameState, Player } from "../game/types";
-import type { AiActionKind, AiDecision, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiSpeechRepairReason, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
+import type { AiActionKind, AiDecision, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiPromptMetrics, AiSpeechRepairReason, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
 
 const MAX_PUBLIC_SPEECH_CHARS = 160;
 const MAX_TABLE_TALK_CHARS = 180;
@@ -87,31 +87,45 @@ export function buildAIPrompt(input: BuildPromptInput): { messages: ChatMessage[
   const knowledge = getRoleKnowledge(input.state, input.playerId);
   const publicState = summarizePublicState(input.state);
   const privateState = [
-    `SELF id=${player.id} seat=${player.seat + 1} role=${player.role} side=${player.allegiance}`,
+    `ME ${player.id}@${player.seat + 1} ${player.role} ${player.allegiance}`,
     `KE=${compactList(knowledge.knownEvilIds)} MC=${compactList(knowledge.merlinCandidateIds)}`,
     roleWarnings(player)
   ].join("\n");
 
   const system = [
-    "AVALON_AGENT_V5.",
+    "AVALON_AGENT_V6.",
     "Pick legal LA.",
-    "Public s<=160; no hidden role/side/card/certainty.",
-    "No public role words.",
+    "s<=160 public; no hidden role/side/card/certainty; no role words.",
     "JSON."
   ].join(" ");
 
   const user = [
-    `L=${input.language === "zh" ? "zh-CN" : "en"} A=${input.actionKind} R=${input.reasoningEffort}:${reasoningInstruction(input.reasoningEffort)}`,
-    `PER c=${formatPersona(input.persona.caution)} ag=${formatPersona(input.persona.aggression)} talk=${formatPersona(input.persona.talkativeness)} trust=${formatPersona(input.persona.trustBias)} dec=${formatPersona(input.persona.deceptionComfort)}`,
+    `L=${input.language === "zh" ? "zh" : "en"} A=${actionKindTag(input.actionKind)} R=${reasoningEffortTag(input.reasoningEffort)}:${reasoningInstruction(input.reasoningEffort)}`,
+    `PR c=${formatPersona(input.persona.caution)} a=${formatPersona(input.persona.aggression)} t=${formatPersona(input.persona.talkativeness)} r=${formatPersona(input.persona.trustBias)} d=${formatPersona(input.persona.deceptionComfort)}`,
     privateState,
     publicState,
     summarizeTableTalk(input.tableTalk ?? []),
-    `STR ${roleStrategy(player)}`,
+    `ST ${roleStrategy(player)}`,
     summarizeLegalActions(input.legalActions),
     outputContract(input.actionKind, input.legalActions)
   ].join("\n");
 
   return { messages: [{ role: "system", content: system }, { role: "user", content: user }] };
+}
+
+export function measurePromptMessages(messages: ChatMessage[]): AiPromptMetrics {
+  const systemChars = messages
+    .filter((message) => message.role === "system")
+    .reduce((total, message) => total + message.content.length, 0);
+  const userChars = messages
+    .filter((message) => message.role === "user")
+    .reduce((total, message) => total + message.content.length, 0);
+  return {
+    messageCount: messages.length,
+    systemChars,
+    userChars,
+    totalChars: systemChars + userChars
+  };
 }
 
 export function extractJsonObject(raw: string): string | null {
@@ -395,7 +409,7 @@ function summarizePublicState(state: GameState): string {
   const questCards = summarizeQuestCardSubmissions(state);
 
   return [
-    `S ph=${state.phase} q=${state.questIndex + 1} fv=${state.failedVotes} lead=${state.players[state.leaderIndex]?.id ?? "?"} prop=${proposal}`,
+    `G ph=${state.phase} q=${state.questIndex + 1} fv=${state.failedVotes} l=${state.players[state.leaderIndex]?.id ?? "?"} pr=${proposal}`,
     `P=${players}`,
     votes,
     questCards,
@@ -418,9 +432,9 @@ function summarizeVotes(state: GameState): string {
 function summarizeQuestCardSubmissions(state: GameState): string {
   const submitted = Object.keys(state.questCards).length;
   if (state.phase === "quest" && state.proposal) {
-    return `QC=${submitted}/${state.proposal.teamIds.length}:hidden`;
+    return `QC=${submitted}/${state.proposal.teamIds.length}:*`;
   }
-  return "QC=hidden;resolved_counts_only";
+  return "QC=*";
 }
 
 function summarizeTableTalk(tableTalk: PublicTalkEntry[]): string {
@@ -471,15 +485,15 @@ function summarizeLegalActions(legalActions: LegalAction[]): string {
 function outputContract(actionKind: AiActionKind, legalActions: LegalAction[]): string {
   if (actionKind === "proposeTeam") {
     const size = legalActions.find((action) => action.type === "proposeTeam")?.teamIds.length ?? "?";
-    return `OUT {\"s\":\"<reason>\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} exact n=${size}`;
+    return `OUT {\"s\":\"x\",\"a\":{\"t\":\"pt\",\"ids\":[\"pX\"]}} n=${size}`;
   }
   if (actionKind === "vote") {
-    return "OUT {\"s\":\"<reason>\",\"a\":{\"t\":\"v\",\"ok\":1}} 0=reject";
+    return "OUT {\"s\":\"x\",\"a\":{\"t\":\"v\",\"ok\":1}} 0=reject";
   }
   if (actionKind === "quest") {
-    return "OUT {\"s\":\"Resolving.\",\"a\":{\"t\":\"q\",\"c\":\"success\"}} fail only if LA";
+    return "OUT {\"s\":\"x\",\"a\":{\"t\":\"q\",\"c\":\"success\"}} fail iff LA";
   }
-  return "OUT {\"s\":\"This read fits.\",\"a\":{\"t\":\"as\",\"id\":\"pX\"}} id=LA";
+  return "OUT {\"s\":\"x\",\"a\":{\"t\":\"as\",\"id\":\"pX\"}} id=LA";
 }
 
 function compactList(ids: string[]): string {
@@ -501,16 +515,16 @@ function playerIdNumber(playerId: string): number {
 
 function roleWarnings(player: Player): string {
   if (player.role === "merlin") {
-    return "RW mh;subtle;cover_asn";
+    return "RW mh subtle coverA";
   }
   if (player.role === "percival") {
-    return "RW mc?;cover_m";
+    return "RW mc? coverM";
   }
   if (player.allegiance === "evil") {
-    return "RW bluff;LA_only";
+    return "RW bluff LA";
   }
 
-  return "RW pub;infer_vq";
+  return "RW pub inferVQ";
 }
 
 function roleStrategy(player: Player): string {
@@ -532,13 +546,36 @@ function roleStrategy(player: Player): string {
 
 function reasoningInstruction(effort: ReasoningEffort): string {
   if (effort === "high") {
-    return "deep:hist+votes+cover+m-risk";
+    return "hist+votes+cover+M?";
   }
   if (effort === "medium") {
-    return "med:prop+votes+quests";
+    return "prop+votes+quests";
   }
 
   return "fast";
+}
+
+function actionKindTag(actionKind: AiActionKind): string {
+  if (actionKind === "proposeTeam") {
+    return "pt";
+  }
+  if (actionKind === "vote") {
+    return "v";
+  }
+  if (actionKind === "quest") {
+    return "q";
+  }
+  return "as";
+}
+
+function reasoningEffortTag(effort: ReasoningEffort): string {
+  if (effort === "high") {
+    return "h";
+  }
+  if (effort === "medium") {
+    return "m";
+  }
+  return "l";
 }
 
 function requirePlayer(state: GameState, playerId: string): Player {

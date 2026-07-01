@@ -1,4 +1,4 @@
-import type { AiFallbackReason, ReasoningEffort, ChatMessage } from "../src/ai/types";
+import type { AiApiUsage, AiFallbackReason, ReasoningEffort, ChatMessage } from "../src/ai/types";
 import type { OpenAICompatibleConfig } from "./env";
 
 interface CallOpenAIInput {
@@ -14,6 +14,22 @@ interface ChatCompletionResponse {
       content?: string;
     };
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    prompt_tokens_details?: {
+      cached_tokens?: number;
+    };
+    completion_tokens_details?: {
+      reasoning_tokens?: number;
+    };
+  };
+}
+
+export interface OpenAICompatibleResult {
+  content: string;
+  usage?: AiApiUsage;
 }
 
 export class OpenAICompatibleError extends Error {
@@ -31,6 +47,10 @@ export function joinOpenAIPath(baseURL: string, path: string): string {
 }
 
 export async function callOpenAICompatible(input: CallOpenAIInput): Promise<string> {
+  return (await callOpenAICompatibleWithUsage(input)).content;
+}
+
+export async function callOpenAICompatibleWithUsage(input: CallOpenAIInput): Promise<OpenAICompatibleResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const firstPayload = buildChatCompletionPayload(input.config.model, input.messages, input.reasoningEffort);
   const first = await postChatCompletion(input.config, firstPayload, fetchImpl);
@@ -42,14 +62,14 @@ export async function callOpenAICompatible(input: CallOpenAIInput): Promise<stri
       throw new OpenAICompatibleError(`OpenAI-compatible request failed (${retry.status}): ${retry.text}`, "api-http-error");
     }
 
-    return parseChatCompletionContent(retry.text);
+    return parseChatCompletionResult(retry.text);
   }
 
   if (!first.ok) {
     throw new OpenAICompatibleError(`OpenAI-compatible request failed (${first.status}): ${first.text}`, "api-http-error");
   }
 
-  return parseChatCompletionContent(first.text);
+  return parseChatCompletionResult(first.text);
 }
 
 export function buildChatCompletionPayload(model: string, messages: ChatMessage[], reasoningEffort?: ReasoningEffort): Record<string, unknown> {
@@ -106,6 +126,10 @@ function shouldRetryWithoutReasoning(status: number, body: string): boolean {
 }
 
 function parseChatCompletionContent(body: string): string {
+  return parseChatCompletionResult(body).content;
+}
+
+function parseChatCompletionResult(body: string): OpenAICompatibleResult {
   let parsed: ChatCompletionResponse;
   try {
     parsed = JSON.parse(body) as ChatCompletionResponse;
@@ -117,7 +141,29 @@ function parseChatCompletionContent(body: string): string {
     throw new OpenAICompatibleError("OpenAI-compatible response did not include choices[0].message.content", "api-empty-response");
   }
 
-  return content;
+  const usage = normalizeUsage(parsed.usage);
+  return {
+    content,
+    ...(usage ? { usage } : {})
+  };
+}
+
+function normalizeUsage(usage: ChatCompletionResponse["usage"]): AiApiUsage | undefined {
+  if (!usage) {
+    return undefined;
+  }
+  const normalized: AiApiUsage = {
+    ...(numberOrUndefined(usage.prompt_tokens) !== undefined ? { promptTokens: usage.prompt_tokens } : {}),
+    ...(numberOrUndefined(usage.completion_tokens) !== undefined ? { completionTokens: usage.completion_tokens } : {}),
+    ...(numberOrUndefined(usage.total_tokens) !== undefined ? { totalTokens: usage.total_tokens } : {}),
+    ...(numberOrUndefined(usage.prompt_tokens_details?.cached_tokens) !== undefined ? { cachedPromptTokens: usage.prompt_tokens_details?.cached_tokens } : {}),
+    ...(numberOrUndefined(usage.completion_tokens_details?.reasoning_tokens) !== undefined ? { reasoningTokens: usage.completion_tokens_details?.reasoning_tokens } : {})
+  };
+  return Object.keys(normalized).length ? normalized : undefined;
+}
+
+function numberOrUndefined(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function isAbortError(error: unknown): boolean {

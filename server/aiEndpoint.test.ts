@@ -25,7 +25,10 @@ describe("AI endpoint orchestration", () => {
   it("calls the model and returns a validated model action when config is usable", async () => {
     const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
     const fetchImpl = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ choices: [{ message: { content: "{\"speech\":\"Approve.\",\"action\":{\"type\":\"vote\",\"approve\":true}}" } }] }), {
+      new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"speech\":\"Approve.\",\"action\":{\"type\":\"vote\",\"approve\":true}}" } }],
+        usage: { prompt_tokens: 211, completion_tokens: 19, total_tokens: 230, prompt_tokens_details: { cached_tokens: 64 } }
+      }), {
         status: 200
       })
     );
@@ -43,6 +46,8 @@ describe("AI endpoint orchestration", () => {
     });
 
     expect(result).toMatchObject({ source: "model", action: { type: "vote", approve: true } });
+    expect(result.promptMetrics).toMatchObject({ messageCount: 2, totalChars: expect.any(Number) });
+    expect(result.apiUsage).toEqual({ promptTokens: 211, completionTokens: 19, totalTokens: 230, cachedPromptTokens: 64 });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
@@ -117,11 +122,11 @@ describe("AI endpoint orchestration", () => {
     const questBody = JSON.parse(fetchImpl.mock.calls[1][1].body);
     const assassinateBody = JSON.parse(fetchImpl.mock.calls[2][1].body);
     expect(voteBody.reasoning_effort).toBe("medium");
-    expect(voteBody.messages[1].content).toContain("A=vote R=medium:");
+    expect(voteBody.messages[1].content).toContain("A=v R=m:");
     expect(questBody.reasoning_effort).toBe("low");
-    expect(questBody.messages[1].content).toContain("A=quest R=low:");
+    expect(questBody.messages[1].content).toContain("A=q R=l:");
     expect(assassinateBody.reasoning_effort).toBe("medium");
-    expect(assassinateBody.messages[1].content).toContain("A=assassinate R=medium:");
+    expect(assassinateBody.messages[1].content).toContain("A=as R=m:");
   });
 
   it("resolves a single legal quest card locally without spending an API call", async () => {

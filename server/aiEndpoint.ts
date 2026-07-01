@@ -1,10 +1,10 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { chooseFallbackDecision } from "../src/ai/fallback";
-import { buildAIPrompt, createPersona, parseAiDecision } from "../src/ai/prompt";
-import type { AiActionKind, AiDecisionResult, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "../src/ai/types";
+import { buildAIPrompt, createPersona, measurePromptMessages, parseAiDecision } from "../src/ai/prompt";
+import type { AiActionKind, AiDecisionResult, AiPromptMetrics, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "../src/ai/types";
 import type { GameState } from "../src/game/types";
 import { hasUsableOpenAIConfig, readOpenAIConfigFromEnv, type OpenAICompatibleConfig } from "./env";
-import { callOpenAICompatible, OpenAICompatibleError } from "./openaiCompatible";
+import { callOpenAICompatibleWithUsage, OpenAICompatibleError } from "./openaiCompatible";
 
 export interface AiActionRequestBody {
   state: GameState;
@@ -43,6 +43,7 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
     return { ...fallback, source: "fallback", fallbackReason: "missing-config" };
   }
 
+  let promptMetrics: AiPromptMetrics | undefined;
   try {
     const reasoningEffort = effectiveReasoningEffortForAction(input.body.actionKind, input.body.reasoningEffort);
     const prompt = buildAIPrompt({
@@ -55,21 +56,28 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
       reasoningEffort,
       language
     });
+    promptMetrics = measurePromptMessages(prompt.messages);
 
-    const content = await callOpenAICompatible({
+    const modelResult = await callOpenAICompatibleWithUsage({
       config: effectiveConfig,
       messages: prompt.messages,
       reasoningEffort,
       fetchImpl: input.fetchImpl
     });
 
-    const decision = parseAiDecision(content, legalActions, fallback);
-    return input.includeRawModelContent ? { ...decision, rawModelContent: content } : decision;
+    const decision = parseAiDecision(modelResult.content, legalActions, fallback);
+    return {
+      ...decision,
+      promptMetrics,
+      ...(modelResult.usage ? { apiUsage: modelResult.usage } : {}),
+      ...(input.includeRawModelContent ? { rawModelContent: modelResult.content } : {})
+    };
   } catch (error) {
     return {
       ...fallback,
       source: "fallback",
-      fallbackReason: error instanceof OpenAICompatibleError ? error.fallbackReason : "api-error"
+      fallbackReason: error instanceof OpenAICompatibleError ? error.fallbackReason : "api-error",
+      ...(promptMetrics ? { promptMetrics } : {})
     };
   }
 }
