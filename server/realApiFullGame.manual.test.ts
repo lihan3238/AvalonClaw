@@ -1,6 +1,6 @@
 import dotenv from "dotenv";
 import { describe, expect, it } from "vitest";
-import { createAiActionResult } from "./aiEndpoint";
+import { createAiActionResult, effectiveReasoningEffortForAction } from "./aiEndpoint";
 import { hasUsableOpenAIConfig, readOpenAIConfigFromEnv } from "./env";
 import { appendRealApiResultJsonl, summarizeRealApiTrace, type RealApiTraceModelTier } from "./realApiTrace";
 import { getLegalActionsForPlayer } from "../src/game/legalActions";
@@ -28,6 +28,7 @@ interface TraceEntry {
   quest: number;
   playerId: string;
   model: string;
+  requestedReasoningEffort: ReasoningEffort;
   reasoningEffort: ReasoningEffort;
   actionKind: AiActionKind;
   source: AiDecisionResult["source"];
@@ -161,6 +162,7 @@ async function playRealApiGame(input: {
 
     const next = getNextAutoplayAction(state);
     const playerProfile = modelProfileForPlayer(input.scenario, input.scenarioConfig, state.players[input.humanSeat].id, next.playerId, input.seed);
+    const reasoningEffort = effectiveReasoningEffortForAction(next.actionKind, playerProfile.reasoningEffort);
     const legalActions = getLegalActionsForPlayer(state, next.playerId, next.actionKind);
     const decision = await createAiActionResult({
       body: {
@@ -181,7 +183,8 @@ async function playRealApiGame(input: {
       quest: state.questIndex + 1,
       playerId: next.playerId,
       model: playerProfile.model,
-      reasoningEffort: playerProfile.reasoningEffort,
+      requestedReasoningEffort: playerProfile.reasoningEffort,
+      reasoningEffort,
       modelTier: playerProfile.modelTier,
       actionKind: next.actionKind,
       source: decision.source,

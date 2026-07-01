@@ -136,22 +136,22 @@ describe("quest and assassination resolution", () => {
     expect(game.questIndex).toBe(1);
   });
 
-  it("requires two fail cards on quest four in 7-10 player games", () => {
-    let game = createInitialGame({
-      playerCount: 7,
-      roles: ["merlin", "percival", "loyal", "loyal", "assassin", "morgana", "mordred"],
-      questIndex: 3
-    });
-    game = proposeTeam(game, "p1", ["p1", "p2", "p5", "p6"]);
-    for (const player of game.players) {
-      game = castVote(game, player.id, true);
-    }
-    game = submitQuestCard(game, "p1", "success");
-    game = submitQuestCard(game, "p2", "success");
-    game = submitQuestCard(game, "p5", "fail");
-    game = submitQuestCard(game, "p6", "success");
+  it("uses the official quest-four fail threshold for each player count", () => {
+    const oneFailExpected = new Map([
+      [5, false],
+      [6, false],
+      [7, true],
+      [8, true],
+      [9, true],
+      [10, true]
+    ]);
 
-    expect(game.questResults.at(-1)).toMatchObject({ failCards: 1, succeeded: true });
+    for (const [playerCount, oneFailSucceeds] of oneFailExpected) {
+      expect(resolveQuestFour(playerCount, 1).questResults.at(-1)).toMatchObject({ failCards: 1, succeeded: oneFailSucceeds });
+    }
+    for (const playerCount of [7, 8, 9, 10]) {
+      expect(resolveQuestFour(playerCount, 2).questResults.at(-1)).toMatchObject({ failCards: 2, succeeded: false });
+    }
   });
 
   it("moves to assassination after the third successful quest and resolves Merlin guesses", () => {
@@ -191,4 +191,49 @@ function createAssassinationGame() {
     ],
     phase: "assassination"
   });
+}
+
+function resolveQuestFour(playerCount: number, failCards: 1 | 2) {
+  const roles = getQuestFourRoles(playerCount);
+  const teamIds = getQuestFourTeam(playerCount);
+  let game = createInitialGame({ playerCount, roles, questIndex: 3 });
+  game = proposeTeam(game, "p1", teamIds);
+  for (const player of game.players) {
+    game = castVote(game, player.id, true);
+  }
+
+  let submittedFails = 0;
+  for (const playerId of teamIds) {
+    const player = game.players.find((candidate) => candidate.id === playerId);
+    const canFail = player?.allegiance === "evil" && submittedFails < failCards;
+    game = submitQuestCard(game, playerId, canFail ? "fail" : "success");
+    if (canFail) {
+      submittedFails += 1;
+    }
+  }
+  expect(submittedFails).toBe(failCards);
+  return game;
+}
+
+function getQuestFourRoles(playerCount: number) {
+  const rolesByPlayerCount = {
+    5: ["merlin", "percival", "loyal", "assassin", "morgana"],
+    6: ["merlin", "percival", "loyal", "loyal", "assassin", "morgana"],
+    7: ["merlin", "percival", "loyal", "loyal", "assassin", "morgana", "mordred"],
+    8: ["merlin", "percival", "loyal", "loyal", "loyal", "assassin", "morgana", "mordred"],
+    9: ["merlin", "percival", "loyal", "loyal", "loyal", "loyal", "assassin", "morgana", "mordred"],
+    10: ["merlin", "percival", "loyal", "loyal", "loyal", "loyal", "assassin", "morgana", "mordred", "oberon"]
+  } as const;
+
+  return [...rolesByPlayerCount[playerCount as keyof typeof rolesByPlayerCount]];
+}
+
+function getQuestFourTeam(playerCount: number): string[] {
+  if (playerCount === 5 || playerCount === 6) {
+    return ["p1", "p2", "p5"];
+  }
+  if (playerCount === 7) {
+    return ["p1", "p2", "p5", "p6"];
+  }
+  return ["p1", "p2", "p3", "p7", "p8"];
 }

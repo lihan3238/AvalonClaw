@@ -44,6 +44,7 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
   }
 
   try {
+    const reasoningEffort = effectiveReasoningEffortForAction(input.body.actionKind, input.body.reasoningEffort);
     const prompt = buildAIPrompt({
       state: input.body.state,
       playerId: input.body.playerId,
@@ -51,14 +52,14 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
       legalActions,
       tableTalk: input.body.tableTalk ?? [],
       persona: createPersona(input.body.playerId, input.body.state.playerCount),
-      reasoningEffort: input.body.reasoningEffort,
+      reasoningEffort,
       language
     });
 
     const content = await callOpenAICompatible({
       config: effectiveConfig,
       messages: prompt.messages,
-      reasoningEffort: input.body.reasoningEffort,
+      reasoningEffort,
       fetchImpl: input.fetchImpl
     });
 
@@ -71,6 +72,16 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
       fallbackReason: error instanceof OpenAICompatibleError ? error.fallbackReason : "api-error"
     };
   }
+}
+
+export function effectiveReasoningEffortForAction(actionKind: AiActionKind, requested: ReasoningEffort): ReasoningEffort {
+  if (actionKind === "quest") {
+    return "low";
+  }
+  if (actionKind === "vote" && requested === "high") {
+    return "medium";
+  }
+  return requested;
 }
 
 function chooseLocalDecision(actionKind: AiActionKind, legalActions: LegalAction[], fallback: { speech: string }): AiDecisionResult | null {

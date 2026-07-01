@@ -46,6 +46,53 @@ describe("AI endpoint orchestration", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it("caps reasoning effort for short action kinds before prompting and transport", async () => {
+    const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"Approve.\",\"a\":{\"t\":\"v\",\"ok\":1}}" } }] }), { status: 200 })
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"Resolving.\",\"a\":{\"t\":\"q\",\"c\":\"fail\"}}" } }] }), { status: 200 })
+      );
+    let questState = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
+    questState = proposeTeam(questState, "p1", ["p1", "p4"]);
+    for (const player of questState.players) {
+      questState = castVote(questState, player.id, true);
+    }
+
+    await createAiActionResult({
+      body: {
+        state,
+        playerId: "p2",
+        actionKind: "vote",
+        legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+        reasoningEffort: "high"
+      },
+      config,
+      fetchImpl
+    });
+    await createAiActionResult({
+      body: {
+        state: questState,
+        playerId: "p4",
+        actionKind: "quest",
+        legalActions: [{ type: "quest", card: "success" }, { type: "quest", card: "fail" }],
+        reasoningEffort: "high"
+      },
+      config,
+      fetchImpl
+    });
+
+    const voteBody = JSON.parse(fetchImpl.mock.calls[0][1].body);
+    const questBody = JSON.parse(fetchImpl.mock.calls[1][1].body);
+    expect(voteBody.reasoning_effort).toBe("medium");
+    expect(voteBody.messages[1].content).toContain("A=vote R=medium:");
+    expect(questBody.reasoning_effort).toBe("low");
+    expect(questBody.messages[1].content).toContain("A=quest R=low:");
+  });
+
   it("resolves a single legal quest card locally without spending an API call", async () => {
     const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
     const fetchImpl = vi.fn();
