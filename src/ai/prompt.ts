@@ -53,6 +53,11 @@ const compactDecisionSchema = z.object({
   a: z.union([compactActionSchema, sloppyVoteActionSchema])
 });
 
+const compactVoteDecisionSchema = z.object({
+  s: z.string().trim().min(1).max(240),
+  a: voteChoiceSchema()
+});
+
 const compactActionEnvelopeSchema = z.object({
   a: z.union([compactActionSchema, sloppyVoteActionSchema])
 });
@@ -95,12 +100,14 @@ export function buildAIPrompt(input: BuildPromptInput): { messages: ChatMessage[
   const system = [
     "AVALON_AGENT_V6.",
     "Pick legal LA.",
-    "s<=160 public; s!=ok/v/yes; no hidden role/side/card/certainty; no role words.",
+    "s is a short public reason, not ok/yes/v.",
+    "Never reveal hidden roles, sides, cards, or certainties.",
+    "No role words.",
     "JSON."
   ].join(" ");
 
   const user = [
-    `L=${input.language === "zh" ? "zh" : "en"} A=${actionKindTag(input.actionKind)} R=${reasoningEffortTag(input.reasoningEffort)}:${reasoningInstruction(input.reasoningEffort)}`,
+    `Speech language: ${speechLanguageLabel(input.language)}. Do not say prompt codes like KE or MC. A=${actionKindTag(input.actionKind)} R=${reasoningEffortTag(input.reasoningEffort)}:${reasoningInstruction(input.reasoningEffort)}`,
     `PR c=${formatPersona(input.persona.caution)} a=${formatPersona(input.persona.aggression)} t=${formatPersona(input.persona.talkativeness)} r=${formatPersona(input.persona.trustBias)} d=${formatPersona(input.persona.deceptionComfort)}`,
     privateState,
     publicState,
@@ -268,7 +275,12 @@ function repairPublicSpeech(speech: string, action: LegalAction, fallback: AiDec
 }
 
 function hasUnsafePublicRoleWord(speech: string): boolean {
-  return /\b(merlin|assassin|morgana|mordred|oberon|percival|minions?|loyal servant|magic)\b/iu.test(speech);
+  return /\b(merlin|assassin|morgana|mordred|oberon|percival|minions?|loyal servant|magic)\b/iu.test(speech)
+    || /\b(?:ke|mc)\b/iu.test(speech);
+}
+
+function speechLanguageLabel(language?: TableLanguage): string {
+  return language === "zh" ? "Chinese" : "English";
 }
 
 function isSchemaEcho(speech: string): boolean {
@@ -344,6 +356,14 @@ function normalizeAiDecision(value: unknown): { speech: string | null; action: L
     return {
       speech: compact.data.s,
       action: normalizeCompactAction(compact.data.a)
+    };
+  }
+
+  const compactVote = compactVoteDecisionSchema.safeParse(value);
+  if (compactVote.success) {
+    return {
+      speech: compactVote.data.s,
+      action: { type: "vote", approve: normalizeVoteChoice(compactVote.data.a) }
     };
   }
 

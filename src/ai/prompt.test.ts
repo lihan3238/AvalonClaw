@@ -205,7 +205,7 @@ describe("AI prompt token budget", () => {
     }).messages[0].content;
 
     expect(first).toBe(second);
-    expect(first.length).toBeLessThan(130);
+    expect(first.length).toBeLessThan(180);
   });
 
   it("summarizes proposal legality without enumerating every team combination", () => {
@@ -238,6 +238,7 @@ describe("AI prompt token budget", () => {
     }).messages.map((message) => message.content).join("\n");
 
     expect(legalActions).toHaveLength(252);
+    expect(prompt).toContain("Speech language: English.");
     expect(prompt).toContain("A=pt R=l:fast");
     expect(prompt).toContain("LA pt n=5 ids=p1,p2,p3,p4,p5,p6,p7,p8,p9,p10");
     expect(prompt).not.toContain(JSON.stringify(legalActions));
@@ -246,14 +247,17 @@ describe("AI prompt token budget", () => {
     expect(prompt).not.toContain("Role strategy:");
     expect(prompt).not.toContain("consistent_public_reads");
     expect(prompt).not.toContain("protect_merlinish");
-    expect(prompt).toContain("s!=ok/v/yes");
-    expect(prompt).toContain("no role words");
+    expect(prompt).toContain("s is a short public reason, not ok/yes/v.");
+    expect(prompt).toContain("Never reveal hidden roles, sides, cards, or certainties.");
+    expect(prompt).toContain("Do not say prompt codes like KE or MC.");
+    expect(prompt).toContain("No role words.");
+    expect(prompt).not.toContain("s!=ok/v/yes");
     expect(prompt).not.toContain("\"s\":\"pub<=160\"");
     expect(prompt).not.toContain("\"s\":\"<reason>\"");
     expect(prompt).not.toContain("\"s\":\"x\"");
     expect(prompt).not.toContain("own_public_reason");
     expect(prompt).toContain("OUT JSON keys=s,a a={\"t\":\"pt\",\"ids\":[\"pX\"]} n=5");
-    expect(prompt.length).toBeLessThan(520);
+    expect(prompt.length).toBeLessThan(620);
   });
 
   it("measures prompt message character cost for real API trace diagnostics", () => {
@@ -347,6 +351,14 @@ describe("AI response parsing", () => {
       action: { type: "vote", approve: false },
       source: "model"
     });
+    expect(parseAiDecision('{"s":"fits public signal","a":1}', legalVotes, {
+      speech: "Fallback",
+      action: { type: "vote", approve: false }
+    })).toEqual({
+      speech: "fits public signal",
+      action: { type: "vote", approve: true },
+      source: "model"
+    });
 
     expect(parseAiDecision('{"s":"Same team.","a":{"t":"pt","ids":["p2","p1"]}}', [{ type: "proposeTeam", teamIds: ["p1", "p2"] }], {
       speech: "Fallback",
@@ -423,6 +435,15 @@ describe("AI response parsing", () => {
     expect(parseAiDecision('{"s":"p1 and p4 both still read as plausible Merlin material.","a":{"t":"v","ok":true}}', legalVotes, fallback)).toEqual({
       speech: "This team is acceptable for now.",
       action: { type: "vote", approve: true },
+      source: "model",
+      speechRepairReason: "unsafe-role-word"
+    });
+    expect(parseAiDecision('{"s":"cover MC without showing too much","a":{"t":"pt","ids":["p1","p2"]}}', [{ type: "proposeTeam", teamIds: ["p1", "p2"] }], {
+      speech: "Safe proposal speech.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
+    })).toEqual({
+      speech: "Safe proposal speech.",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] },
       source: "model",
       speechRepairReason: "unsafe-role-word"
     });
