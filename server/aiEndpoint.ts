@@ -146,7 +146,7 @@ function readOpenAIConfigFromBody(body: AiActionRequestBody): OpenAICompatibleCo
     baseURL: normalizeBaseURL(body.aiConfig?.baseURL),
     apiKey: normalizeString(body.aiConfig?.apiKey),
     model: body.model?.trim() || "gpt-5.4-mini",
-    timeoutMs: 45_000
+    timeoutMs: 90_000
   };
 }
 

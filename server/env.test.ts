@@ -11,7 +11,8 @@ describe("OpenAI-compatible env config", () => {
     expect(config).toMatchObject({
       baseURL: "https://example.test/v1",
       apiKey: "key",
-      model: "model-a"
+      model: "model-a",
+      timeoutMs: 90_000
     });
   });
 

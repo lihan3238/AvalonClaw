@@ -22,7 +22,7 @@ interface RequestAiActionInput {
 // The per-action default from clientAiTimeoutMsFor stays above the server's
 // effort-scaled single-attempt window; this constant is only the legacy export
 // used by tests and callers that pass an explicit timeoutMs.
-export const CLIENT_AI_REQUEST_TIMEOUT_MS = 180_000;
+export const CLIENT_AI_REQUEST_TIMEOUT_MS = 360_000;
 
 export async function requestAiAction(input: RequestAiActionInput): Promise<AiDecisionResult> {
   const fallback = chooseFallbackDecision(input.state, input.playerId, input.actionKind, input.language);

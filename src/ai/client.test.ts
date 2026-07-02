@@ -31,6 +31,7 @@ describe("AI browser client validation", () => {
       model: "model-a",
       aiConfig
     });
+    expect(CLIENT_AI_REQUEST_TIMEOUT_MS).toBe(360_000);
     await vi.advanceTimersByTimeAsync(CLIENT_AI_REQUEST_TIMEOUT_MS + 1);
 
     await expect(pending).resolves.toMatchObject({
