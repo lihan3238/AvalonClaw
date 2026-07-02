@@ -35,6 +35,7 @@ lihan-cards mode: engineering
 
 ## Production Deployment
 
+- Public repository: `https://github.com/lihan3238/AvalonClaw`
 - Production target: `srv998135.hstgr.cloud`
 - Public app URL: `http://srv998135.hstgr.cloud:3238/`
 - Production port: `3238`
@@ -42,7 +43,13 @@ lihan-cards mode: engineering
 - Release symlink: `/opt/avalon-claw/current`
 - App-local Node runtime: `/opt/avalon-claw/runtime/node-v20.20.2-linux-x64`
 - Preferred service name: `avalon-claw.service`
-- Production command from the release directory:
+- Deploy flow: push to `main` on GitHub, then run
+  `ssh srv998135.hstgr.cloud /opt/avalon-claw/deploy.sh` — the script pulls
+  `origin/main` into `/opt/avalon-claw/repo`, runs `npm ci`,
+  `npm test -- --run`, `npm run build`, cuts a timestamped release under
+  `/opt/avalon-claw/releases/`, flips the `current` symlink atomically,
+  restarts the service, and keeps the 5 newest releases.
+- Manual fallback from the release directory:
   `HOST=0.0.0.0 PORT=3238 npm run prod:start`
 
 ## Development
