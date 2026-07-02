@@ -266,7 +266,7 @@ describe("OpenAI-compatible transport", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3);
   });
 
-  it("retries transient transport timeouts before falling back", async () => {
+  it("does not retry upstream timeouts because a slow generation would just restart and time out again", async () => {
     const timeoutError = new DOMException("This operation was aborted", "AbortError");
     const fetchImpl = vi
       .fn()
@@ -278,8 +278,8 @@ describe("OpenAI-compatible transport", () => {
       messages: [{ role: "user", content: "Return JSON" }],
       reasoningEffort: "low",
       fetchImpl
-    })).resolves.toContain("\"ok\"");
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    })).rejects.toMatchObject({ fallbackReason: "api-timeout", attempts: 1 });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("classifies empty and invalid provider response payloads", async () => {

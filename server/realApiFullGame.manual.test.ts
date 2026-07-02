@@ -1,7 +1,7 @@
 import dotenv from "dotenv";
 import { describe, expect, it } from "vitest";
 import { createAiActionResult, effectiveReasoningEffortForAction } from "./aiEndpoint";
-import { hasUsableOpenAIConfig, readOpenAIConfigFromEnv } from "./env";
+import { hasUsableOpenAIConfig, readOpenAIConfigFromEnv, type OpenAICompatibleConfig } from "./env";
 import { appendRealApiResultJsonl, auditRealApiGame, summarizeRealApiTrace, type RealApiTraceModelTier } from "./realApiTrace";
 import { getLegalActionsForPlayer } from "../src/game/legalActions";
 import {
@@ -96,7 +96,8 @@ maybeDescribe("manual real API full-game smoke", () => {
           language,
           maxSteps,
           streamSteps,
-          includeRawModelContent
+          includeRawModelContent,
+          openAIConfig: config
         });
 
         expect(result.final.phase).toBe("gameOver");
@@ -211,6 +212,7 @@ async function playRealApiGame(input: {
   maxSteps: number;
   streamSteps: boolean;
   includeRawModelContent: boolean;
+  openAIConfig: OpenAICompatibleConfig;
 }): Promise<{ final: GameState; steps: number; trace: TraceEntry[] }> {
   let state = createInitialGame({
     playerCount: input.playerCount,
@@ -241,6 +243,7 @@ async function playRealApiGame(input: {
         language: input.language,
         model: playerProfile.model
       },
+      config: input.openAIConfig,
       includeRawModelContent: input.includeRawModelContent
     });
 

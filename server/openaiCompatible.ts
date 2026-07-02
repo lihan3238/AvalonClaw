@@ -263,7 +263,9 @@ function isTransientHttpStatus(status: number): boolean {
 }
 
 function isTransientTransportError(error: OpenAICompatibleError): boolean {
-  return error.fallbackReason === "api-timeout" || error.fallbackReason === "api-error";
+  // A timed-out attempt means the provider needs longer than the full window
+  // for this generation; an identical retry just multiplies the user's wait.
+  return error.fallbackReason === "api-error";
 }
 
 function transientHttpRetryDelayMs(attempt: number): number {

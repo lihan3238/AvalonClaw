@@ -501,6 +501,71 @@ describe("AI prompt private information", () => {
   });
 });
 
+describe("AI prompt public rules context", () => {
+  it("shows the full quest schedule with the double-fail round and current quest marker", () => {
+    const state = createInitialGame({
+      playerCount: 10,
+      roles: ["merlin", "percival", "loyal", "loyal", "loyal", "loyal", "assassin", "morgana", "mordred", "oberon"],
+      questIndex: 3
+    });
+
+    const prompt = buildAIPrompt({
+      state,
+      playerId: "p1",
+      actionKind: "vote",
+      legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+      persona: createPersona("p1", 10),
+      reasoningEffort: "medium"
+    }).messages.map((message) => message.content).join("\n");
+
+    expect(prompt).toContain("QS q1=3 q2=4 q3=4 q4*=5:2F q5=5 (*=current)");
+    expect(prompt).toContain("LG 2F quest fails only with >=2 fail cards; 1F there still succeeds but proves >=1 evil on team");
+  });
+
+  it("omits the double-fail hint for small tables without a 2F quest", () => {
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"]
+    });
+
+    const prompt = buildAIPrompt({
+      state,
+      playerId: "p1",
+      actionKind: "vote",
+      legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+      persona: createPersona("p1", 5),
+      reasoningEffort: "medium"
+    }).messages.map((message) => message.content).join("\n");
+
+    expect(prompt).toContain("QS q1*=2 q2=3 q3=2 q4=3 q5=3 (*=current)");
+    expect(prompt).not.toContain("LG 2F quest");
+  });
+
+  it("summarizes the running quest score, vote track, and win conditions", () => {
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"],
+      questIndex: 2,
+      failedVotes: 2,
+      questResults: [
+        { teamIds: ["p1", "p2"], failCards: 0, succeeded: true },
+        { teamIds: ["p1", "p3", "p4"], failCards: 1, succeeded: false }
+      ]
+    });
+
+    const prompt = buildAIPrompt({
+      state,
+      playerId: "p2",
+      actionKind: "vote",
+      legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+      persona: createPersona("p2", 5),
+      reasoningEffort: "medium"
+    }).messages.map((message) => message.content).join("\n");
+
+    expect(prompt).toContain("SC S=1 F=1 first-to-3-quests-wins fv=2/5 evil-wins-at-5fv; after 3S assassin shoots; evil wins iff merlin hit");
+  });
+});
+
 describe("AI prompt public vote information", () => {
   it("hides individual votes until every player has voted", () => {
     let state = createInitialGame({
@@ -758,7 +823,7 @@ describe("AI prompt token budget", () => {
     expect(prompt).not.toContain("\"s\":\"x\"");
     expect(prompt).not.toContain("own_public_reason");
     expect(prompt).toContain("OUT JSON keys=s,a a={\"t\":\"pt\",\"ids\":[\"pX\"]} n=5");
-    expect(prompt.length).toBeLessThan(860);
+    expect(prompt.length).toBeLessThan(1200);
   });
 
   it("measures prompt message character cost for real API trace diagnostics", () => {

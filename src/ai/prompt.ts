@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { derivePublicFactsFromState, type PublicFacts } from "../game/publicFacts";
-import { getRoleKnowledge } from "../game/rules";
+import { getRoleKnowledge, getQuestConfig } from "../game/rules";
 import type { GameState, Player, Role } from "../game/types";
 import type { AiActionKind, AiDecision, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiPromptMetrics, AiSpeechRepairReason, ChatMessage, LegalAction, Persona, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
 
@@ -140,6 +140,8 @@ export function buildAIPrompt(input: BuildPromptInput): { messages: ChatMessage[
     `Speech language: ${speechLanguageLabel(input.language)}. No prompt codes in s: KE/MC/PF/SELF_FACT/PRIVATE_FACT/PUBLIC_FACT. A=${actionKindTag(input.actionKind)} R=${reasoningEffortTag(input.reasoningEffort)}:${reasoningInstruction(input.reasoningEffort)}`,
     `PR c=${formatPersona(input.persona.caution)} a=${formatPersona(input.persona.aggression)} t=${formatPersona(input.persona.talkativeness)} r=${formatPersona(input.persona.trustBias)} d=${formatPersona(input.persona.deceptionComfort)}`,
     summarizePublicConfig(input.state),
+    summarizeQuestSchedule(input.state),
+    summarizeWinState(input.state),
     "KN KE=confirmed-private-evil MC=ambiguous-merlin-morgana",
     privateState,
     summarizePublicFacts(input.state, publicFacts),
@@ -576,6 +578,23 @@ function summarizePublicConfig(state: GameState): string {
   return `CFG n=${state.playerCount} good=${goodCount} evil=${evilCount} roles=${roles}`;
 }
 
+function summarizeQuestSchedule(state: GameState): string {
+  const quests = getQuestConfig(state.playerCount)
+    .map((quest, index) => {
+      const marker = index === state.questIndex ? "*" : "";
+      const fails = quest.failsRequired > 1 ? `:${quest.failsRequired}F` : "";
+      return `q${index + 1}${marker}=${quest.teamSize}${fails}`;
+    })
+    .join(" ");
+  return `QS ${quests} (*=current)`;
+}
+
+function summarizeWinState(state: GameState): string {
+  const successes = state.questResults.filter((quest) => quest.succeeded).length;
+  const failures = state.questResults.length - successes;
+  return `SC S=${successes} F=${failures} first-to-3-quests-wins fv=${state.failedVotes}/5 evil-wins-at-5fv; after 3S assassin shoots; evil wins iff merlin hit`;
+}
+
 function summarizePublicState(state: GameState): string {
   const players = state.players.map((player) => `${player.id}@${player.seat + 1}${player.isHuman ? "H" : "A"}`).join(",");
   const quests = state.questResults.length
@@ -606,7 +625,10 @@ function summarizeDiscussion(state: GameState): string {
 }
 
 function summarizeLogicHints(state: GameState): string {
-  return state.questResults.length
+  const doubleFailHint = getQuestConfig(state.playerCount).some((quest) => quest.failsRequired > 1)
+    ? ["LG 2F quest fails only with >=2 fail cards; 1F there still succeeds but proves >=1 evil on team"]
+    : [];
+  const historyHints = state.questResults.length
     ? [
       "CHECK before JSON: use PF hardGood/hardEvil as 100% facts; everything else is SOFT_READ unless LG proves it",
       "LG zero-fail: 0F never proves quest team public-good; evil can play success to hide",
@@ -624,8 +646,10 @@ function summarizeLogicHints(state: GameState): string {
       "LG no score-wash: history/score can create suspicion only; do not call score-made good/clean unless LG hard fact",
       "LG HARD use PF hardGood/hardEvil before every action; forced public facts beat trust/stable/clean words",
       "LG speech guard: say likely/read/suspicion unless LG hard fact proves public-good/public-evil"
-    ].join("\n")
-    : "LG -";
+    ]
+    : [];
+  const hints = [...doubleFailHint, ...historyHints];
+  return hints.length ? hints.join("\n") : "LG -";
 }
 
 function summarizePerspectiveGuidance(player: Player, actionKind: AiActionKind, state: GameState): string {

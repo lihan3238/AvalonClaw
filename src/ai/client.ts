@@ -1,3 +1,4 @@
+import { clientAiTimeoutMsFor } from "./effort";
 import { chooseFallbackDecision } from "./fallback";
 import { parseAiDecision } from "./prompt";
 import type { AiActionKind, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiRuntimeConfig, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
@@ -18,13 +19,16 @@ interface RequestAiActionInput {
 }
 
 // Hard client-side ceiling so a hung connection can never leave a seat "thinking" forever.
-// The server itself budgets up to ~3 x 45s upstream attempts, so stay above that window.
-export const CLIENT_AI_REQUEST_TIMEOUT_MS = 150_000;
+// The per-action default from clientAiTimeoutMsFor stays above the server's
+// effort-scaled single-attempt window; this constant is only the legacy export
+// used by tests and callers that pass an explicit timeoutMs.
+export const CLIENT_AI_REQUEST_TIMEOUT_MS = 180_000;
 
 export async function requestAiAction(input: RequestAiActionInput): Promise<AiDecisionResult> {
   const fallback = chooseFallbackDecision(input.state, input.playerId, input.actionKind, input.language);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? CLIENT_AI_REQUEST_TIMEOUT_MS);
+  const timeoutMs = input.timeoutMs ?? clientAiTimeoutMsFor(input.actionKind, input.reasoningEffort);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch("/api/ai-action", {
       method: "POST",

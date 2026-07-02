@@ -1,11 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { chooseFallbackDecision } from "../src/ai/fallback";
+import { effectiveReasoningEffortForAction, upstreamTimeoutMsForEffort } from "../src/ai/effort";
 import { buildAIPrompt, createPersona, measurePromptMessages, parseAiDecision } from "../src/ai/prompt";
 import type { AiActionKind, AiApiTiming, AiDecisionResult, AiPromptMetrics, AiRuntimeConfig, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "../src/ai/types";
 import { getLegalActionsForPlayer } from "../src/game/legalActions";
 import type { GameState } from "../src/game/types";
 import { hasUsableOpenAIConfig, type OpenAICompatibleConfig } from "./env";
 import { callOpenAICompatibleWithUsage, OpenAICompatibleError } from "./openaiCompatible";
+
+export { effectiveReasoningEffortForAction };
 
 export interface AiActionRequestBody {
   sessionId?: string;
@@ -72,7 +75,10 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
     promptMetrics = measurePromptMessages(prompt.messages);
 
     const modelResult = await callOpenAICompatibleWithUsage({
-      config: effectiveConfig,
+      config: {
+        ...effectiveConfig,
+        timeoutMs: Math.max(effectiveConfig.timeoutMs, upstreamTimeoutMsForEffort(reasoningEffort))
+      },
       messages: prompt.messages,
       reasoningEffort,
       fetchImpl: input.fetchImpl
@@ -98,16 +104,6 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
       ...(promptMetrics ? { promptMetrics } : {})
     };
   }
-}
-
-export function effectiveReasoningEffortForAction(actionKind: AiActionKind, requested: ReasoningEffort): ReasoningEffort {
-  if (actionKind === "quest") {
-    return "low";
-  }
-  if ((actionKind === "speak" || actionKind === "vote") && (requested === "high" || requested === "xhigh")) {
-    return "medium";
-  }
-  return requested;
 }
 
 function chooseLocalDecision(actionKind: AiActionKind, legalActions: LegalAction[], fallback: { speech: string; action: LegalAction }): AiDecisionResult | null {
