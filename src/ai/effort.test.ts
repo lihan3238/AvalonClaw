@@ -7,7 +7,8 @@ describe("reasoning effort policy", () => {
     expect(effectiveReasoningEffortForAction("vote", "xhigh")).toBe("medium");
     expect(effectiveReasoningEffortForAction("proposeTeam", "xhigh")).toBe("high");
     expect(effectiveReasoningEffortForAction("proposeTeam", "high")).toBe("high");
-    expect(effectiveReasoningEffortForAction("assassinate", "xhigh")).toBe("xhigh");
+    expect(effectiveReasoningEffortForAction("assassinate", "xhigh")).toBe("high");
+    expect(effectiveReasoningEffortForAction("assassinate", "high")).toBe("high");
   });
 
   it("scales the upstream request window with reasoning effort", () => {
@@ -22,6 +23,6 @@ describe("reasoning effort policy", () => {
     expect(clientAiTimeoutMsFor("vote", "xhigh")).toBe(90_000);
     expect(clientAiTimeoutMsFor("quest", "xhigh")).toBe(75_000);
     expect(clientAiTimeoutMsFor("proposeTeam", "low")).toBe(75_000);
-    expect(clientAiTimeoutMsFor("assassinate", "xhigh")).toBe(180_000);
+    expect(clientAiTimeoutMsFor("assassinate", "xhigh")).toBe(120_000);
   });
 });

@@ -1,9 +1,9 @@
 import type { AiActionKind, ReasoningEffort } from "./types";
 
 // Short or low-information actions never benefit from long reasoning, so cap
-// them regardless of the table-level requested effort. Proposals cap at high:
-// real xhigh traces exceed even a 150s window and always end in fallback,
-// while high-effort proposals finish inside the 90s window.
+// them regardless of the table-level requested effort. Strategic actions cap
+// at high: real xhigh traces exceed even a 150s window and always end in
+// fallback, while high-effort decisions finish inside the 90s window.
 export function effectiveReasoningEffortForAction(actionKind: AiActionKind, requested: ReasoningEffort): ReasoningEffort {
   if (actionKind === "quest") {
     return "low";
@@ -11,7 +11,7 @@ export function effectiveReasoningEffortForAction(actionKind: AiActionKind, requ
   if ((actionKind === "speak" || actionKind === "vote") && (requested === "high" || requested === "xhigh")) {
     return "medium";
   }
-  if (actionKind === "proposeTeam" && requested === "xhigh") {
+  if ((actionKind === "proposeTeam" || actionKind === "assassinate") && requested === "xhigh") {
     return "high";
   }
   return requested;

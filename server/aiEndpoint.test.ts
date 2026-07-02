@@ -159,8 +159,8 @@ describe("AI endpoint orchestration", () => {
     expect(effectiveReasoningEffortForAction("vote", "xhigh")).toBe("medium");
     expect(effectiveReasoningEffortForAction("speak", "high")).toBe("medium");
     expect(effectiveReasoningEffortForAction("quest", "xhigh")).toBe("low");
-    expect(assassinateBody.reasoning).toEqual({ effort: "xhigh" });
-    expect(assassinateBody.input[1].content).toContain("A=as R=x:");
+    expect(assassinateBody.reasoning).toEqual({ effort: "high" });
+    expect(assassinateBody.input[1].content).toContain("A=as R=h:");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
