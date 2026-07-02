@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { extname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { handleAiActionRequest } from "./aiEndpoint";
+import { handleRoomRequest } from "./roomEndpoint";
 
 export interface ProdServerConfig {
   host: string;
@@ -33,6 +34,10 @@ export function createProdRequestHandler(options: CreateProdRequestHandlerOption
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     if (url.pathname === "/api/ai-action") {
       await aiHandler(req, res);
+      return;
+    }
+    if (url.pathname === "/api/room") {
+      await handleRoomRequest(req, res);
       return;
     }
 

@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { createInitialGame } from "../game/rules";
-import { requestAiAction } from "./client";
+import { CLIENT_AI_REQUEST_TIMEOUT_MS, requestAiAction } from "./client";
 
 const aiConfig = { baseURL: "https://example.test/v1", apiKey: "key" };
 
@@ -8,6 +8,36 @@ describe("AI browser client validation", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("aborts a hung endpoint request and falls back instead of thinking forever", async () => {
+    vi.useFakeTimers();
+    const state = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"]
+    });
+    vi.stubGlobal("fetch", vi.fn((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    })));
+
+    const pending = requestAiAction({
+      state,
+      playerId: "p1",
+      actionKind: "proposeTeam",
+      legalActions: [{ type: "proposeTeam", teamIds: ["p1", "p2"] }],
+      reasoningEffort: "low",
+      language: "en",
+      model: "model-a",
+      aiConfig
+    });
+    await vi.advanceTimersByTimeAsync(CLIENT_AI_REQUEST_TIMEOUT_MS + 1);
+
+    await expect(pending).resolves.toMatchObject({
+      source: "fallback",
+      fallbackReason: "api-timeout",
+      action: { type: "proposeTeam", teamIds: ["p1", "p2"] }
+    });
   });
 
   it("falls back locally when the endpoint returns an illegal action", async () => {

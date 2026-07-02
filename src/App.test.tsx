@@ -750,6 +750,95 @@ describe("Avalon app", () => {
     expect(screen.queryByText(/你的身份/)).not.toBeInTheDocument();
   });
 
+  it("creates a multiplayer lobby with a shareable room code and gates start on readiness", async () => {
+    const roomSnapshot = {
+      code: "AV-20260702-ROOM",
+      status: "lobby",
+      playerCount: 5,
+      language: "zh",
+      members: [
+        { id: "m1", name: "房主", isHost: true, ready: true, seat: null },
+        { id: "m2", name: "朋友", isHost: false, ready: false, seat: null }
+      ],
+      you: { id: "m1", name: "房主", isHost: true, ready: true, seat: null },
+      version: 0
+    };
+    vi.stubGlobal("fetch", vi.fn((url: unknown, init?: RequestInit) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (String(url) === "/api/room" && body.op === "create") {
+        return Promise.resolve(jsonResponse({ hostToken: "host-token", snapshot: roomSnapshot }));
+      }
+      if (String(url) === "/api/room" && body.op === "snapshot") {
+        return Promise.resolve(jsonResponse({ snapshot: roomSnapshot }));
+      }
+      return Promise.resolve(jsonResponse({ ok: true }));
+    }));
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/昵称/), { target: { value: "房主" } });
+    fireEvent.click(screen.getByRole("button", { name: /创建多人房间/ }));
+
+    await waitFor(() => expect(screen.getByText(/准备大厅/)).toBeInTheDocument());
+    expect(screen.getByText("AV-20260702-ROOM")).toBeInTheDocument();
+    expect(screen.getByText(/未准备/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /开始对局/ })).toBeDisabled();
+    expect(screen.getByText(/等待所有玩家准备完成/)).toBeInTheDocument();
+  });
+
+  it("lets a guest join a room by code and submit a ready toggle", async () => {
+    const baseSnapshot = {
+      code: "AV-20260702-JOIN",
+      status: "lobby",
+      playerCount: 5,
+      language: "zh",
+      members: [
+        { id: "m1", name: "房主", isHost: true, ready: true, seat: null },
+        { id: "m2", name: "客人", isHost: false, ready: false, seat: null }
+      ],
+      you: { id: "m2", name: "客人", isHost: false, ready: false, seat: null },
+      version: 0
+    };
+    const readySnapshot = {
+      ...baseSnapshot,
+      members: [
+        baseSnapshot.members[0],
+        { ...baseSnapshot.members[1], ready: true }
+      ],
+      you: { ...baseSnapshot.you, ready: true }
+    };
+    const roomCalls: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn((url: unknown, init?: RequestInit) => {
+      const body = JSON.parse((init as RequestInit).body as string);
+      if (String(url) !== "/api/room") {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      roomCalls.push(body);
+      if (body.op === "join") {
+        return Promise.resolve(jsonResponse({ token: "guest-token", snapshot: baseSnapshot }));
+      }
+      if (body.op === "ready") {
+        return Promise.resolve(jsonResponse({ snapshot: readySnapshot }));
+      }
+      return Promise.resolve(jsonResponse({ snapshot: baseSnapshot }));
+    }));
+
+    render(<App />);
+
+    fireEvent.change(screen.getByLabelText(/昵称/), { target: { value: "客人" } });
+    fireEvent.change(screen.getByLabelText(/房间号/), { target: { value: "av-20260702-join" } });
+    fireEvent.click(screen.getByRole("button", { name: /加入房间/ }));
+
+    await waitFor(() => expect(screen.getByText(/准备大厅/)).toBeInTheDocument());
+    expect(screen.getByRole("button", { name: /^准备$/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /开始对局/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^准备$/ }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /取消准备/ })).toBeInTheDocument());
+    expect(roomCalls.some((call) => call.op === "ready" && call.ready === true)).toBe(true);
+  });
+
   it("ignores an old AI response after starting another game", async () => {
     const delayed = pendingResponse();
     vi.stubGlobal("fetch", vi.fn(() => delayed.promise));

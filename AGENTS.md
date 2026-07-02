@@ -13,6 +13,25 @@ lihan-cards mode: engineering
   `/api/ai-action` request to the server-side proxy.
 - The model field remains a browser-side setup control; the default is
   `gpt-5.4-mini`.
+- The server transport prefers the OpenAI Responses API (`/v1/responses`,
+  `reasoning.effort`, `text.format`) and falls back to `/v1/chat/completions`
+  when the provider has no Responses route; the working protocol is memoized
+  per base URL and all fallbacks share one 3-attempt retry budget
+  (`server/openaiCompatible.ts`).
+
+## Multiplayer
+
+- `/api/room` (mounted in both `vite.config.ts` and `server/prodServer.ts`,
+  handler `server/roomEndpoint.ts`) multiplexes room ops via a JSON `op` field:
+  create/join/leave/ready/start/push-state/snapshot/submit-action/drain-actions.
+- Rooms live in server memory (`server/roomStore.ts`); the host browser stays
+  the authoritative game driver. Hosts push versioned full state, guests poll
+  seat-redacted snapshots (`src/game/multiplayerView.ts` hides roles,
+  unresolved votes, and quest-card attribution), and guest actions queue until
+  the host drains and applies them against the latest state.
+- The lobby flow: host creates a room (game-id-style code), guests join by
+  code and ready up, host starts once everyone is ready; empty seats are
+  filled by AI players.
 
 ## Production Deployment
 

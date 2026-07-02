@@ -14,15 +14,23 @@ interface RequestAiActionInput {
   language: TableLanguage;
   model: string;
   aiConfig: AiRuntimeConfig;
+  timeoutMs?: number;
 }
+
+// Hard client-side ceiling so a hung connection can never leave a seat "thinking" forever.
+// The server itself budgets up to ~3 x 45s upstream attempts, so stay above that window.
+export const CLIENT_AI_REQUEST_TIMEOUT_MS = 150_000;
 
 export async function requestAiAction(input: RequestAiActionInput): Promise<AiDecisionResult> {
   const fallback = chooseFallbackDecision(input.state, input.playerId, input.actionKind, input.language);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? CLIENT_AI_REQUEST_TIMEOUT_MS);
   try {
     const response = await fetch("/api/ai-action", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(input)
+      body: JSON.stringify(input),
+      signal: controller.signal
     });
     if (!response.ok) {
       throw new Error(`AI endpoint returned ${response.status}`);
@@ -53,9 +61,16 @@ export async function requestAiAction(input: RequestAiActionInput): Promise<AiDe
     }
 
     return decision;
-  } catch {
-    return { ...fallback, source: "fallback", fallbackReason: "network-error" };
+  } catch (error) {
+    return { ...fallback, source: "fallback", fallbackReason: isAbortError(error) ? "api-timeout" : "network-error" };
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError"
+    || error instanceof Error && error.name === "AbortError";
 }
 
 function readEndpointSource(raw: string): "model" | "fallback" | "local" | null {

@@ -18,7 +18,20 @@ import {
   submitQuestCard
 } from "./game/rules";
 import { createSessionId, isRestorableSession, listSessions, loadSession, saveSession, type SavedLogEntry, type SavedSession } from "./game/sessionStore";
-import type { GameState, Player, QuestCard, Role } from "./game/types";
+import type { GameState, Player, QuestCard, Role, RoleKnowledge } from "./game/types";
+import {
+  createRoomOnServer,
+  drainRoomActionsFromServer,
+  fetchRoomSnapshot,
+  joinRoomOnServer,
+  leaveRoomOnServer,
+  pushRoomStateToServer,
+  setRoomReady,
+  startRoomOnServer,
+  submitRoomActionToServer,
+  type PendingRoomAction,
+  type RoomSnapshot
+} from "./multiplayer/roomClient";
 
 type LogEntry = SavedLogEntry;
 type Theme = "dark" | "light";
@@ -122,7 +135,28 @@ const copy = {
     assassinated: "chose Merlin target",
     fallback: "local fallback",
     fallbackNotice: "returned no usable action; local fallback took over.",
-    wins: "wins"
+    wins: "wins",
+    multiplayer: "Multiplayer",
+    createRoom: "Create room",
+    joinRoom: "Join room",
+    roomCode: "Room code",
+    yourName: "Your name",
+    lobbyTitle: "Game lobby",
+    shareCode: "Share this room code; friends enter it on this page to join.",
+    readyBtn: "Ready",
+    cancelReady: "Cancel ready",
+    readyState: "Ready",
+    notReadyState: "Not ready",
+    hostBadge: "Host",
+    startMatch: "Start match",
+    leaveRoom: "Leave room",
+    waitingHost: "Waiting for the host to start the match...",
+    waitingAllReady: "Waiting for every player to ready up.",
+    aiSeatsNote: "Empty seats will be filled by AI players.",
+    humanPlayer: "Human",
+    roomUnavailable: "Room service unavailable; check the server and try again.",
+    actionSubmitted: "Action submitted; waiting for the table.",
+    inRoom: "Room"
   },
   zh: {
     localTable: "本机 AI 牌桌",
@@ -214,7 +248,28 @@ const copy = {
     assassinated: "选择刺杀目标",
     fallback: "本地兜底",
     fallbackNotice: "没有给出可用行动，已使用本地兜底。",
-    wins: "获胜"
+    wins: "获胜",
+    multiplayer: "多人对局",
+    createRoom: "创建多人房间",
+    joinRoom: "加入房间",
+    roomCode: "房间号",
+    yourName: "昵称",
+    lobbyTitle: "准备大厅",
+    shareCode: "把房间号发给朋友，对方在本页输入即可加入。",
+    readyBtn: "准备",
+    cancelReady: "取消准备",
+    readyState: "已准备",
+    notReadyState: "未准备",
+    hostBadge: "房主",
+    startMatch: "开始对局",
+    leaveRoom: "离开房间",
+    waitingHost: "等待房主开始对局…",
+    waitingAllReady: "等待所有玩家准备完成。",
+    aiSeatsNote: "空余座位将由 AI 玩家补齐。",
+    humanPlayer: "真人",
+    roomUnavailable: "房间服务不可用，请检查服务器后重试。",
+    actionSubmitted: "操作已提交，等待牌桌同步。",
+    inRoom: "房间"
   }
 } satisfies Record<TableLanguage, Record<string, string>>;
 
@@ -279,21 +334,32 @@ export default function App() {
   const [talkInput, setTalkInput] = useState("");
   const [clockNow, setClockNow] = useState(() => Date.now());
   const [phaseDeadline, setPhaseDeadline] = useState(() => Date.now() + 60_000);
+  const [room, setRoom] = useState<RoomSnapshot | null>(null);
+  const [roomToken, setRoomToken] = useState<string | null>(null);
+  const [roomError, setRoomError] = useState("");
+  const [roomBusy, setRoomBusy] = useState(false);
+  const [playerNameInput, setPlayerNameInput] = useState("");
+  const [joinCodeInput, setJoinCodeInput] = useState("");
+  const [guestKnowledge, setGuestKnowledge] = useState<RoleKnowledge | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const gameRef = useRef<GameState | null>(null);
   const activeAiKeysRef = useRef<Set<string>>(new Set());
+  const roomVersionRef = useRef(1);
+  const guestVersionRef = useRef(0);
 
-  sessionIdRef.current = sessionId;
-  gameRef.current = game;
-
-  const human = game?.players.find((player) => player.isHuman);
+  const roomRole: "host" | "guest" | null = room ? (room.you.isHost ? "host" : "guest") : null;
+  // players[humanSeat] is always "me": the host's own seat locally, and the
+  // viewer's seat inside a redacted multiplayer guest view.
+  const human = game ? game.players[game.humanSeat] : undefined;
   const leader = game ? game.players[game.leaderIndex] : null;
   const questConfig = game ? getQuestConfig(game.playerCount)[game.questIndex] : null;
-  const humanKnowledge = game && human ? getRoleKnowledge(game, human.id) : null;
+  const humanKnowledge = roomRole === "guest"
+    ? guestKnowledge
+    : game && human ? getRoleKnowledge(game, human.id) : null;
   const currentHumanAction = game && human ? getHumanAction(game, human.id) : null;
   const phaseKey = game ? getPhaseKey(game) : "setup";
   const countdownSeconds = game && game.phase !== "gameOver" ? Math.max(0, Math.ceil((phaseDeadline - clockNow) / 1000)) : null;
-  const pendingAiPlayers = game ? getPendingAiPlayers(game, pendingAi) : [];
+  const pendingAiPlayers = game && sessionId ? getPendingAiPlayers(game, pendingAi, sessionId) : [];
   const pendingAiPlayerIds = new Set(pendingAiPlayers.map((player) => player.id));
   const highlightedTeam = game?.phase === "proposal" && leader?.isHuman ? selectedTeam : game?.proposal?.teamIds ?? [];
   const currentDiscussionSpeaker = game?.phase === "discussion" && game.discussion ? game.players[game.discussion.nextSpeakerIndex] : null;
@@ -355,6 +421,9 @@ export default function App() {
     if (!game || !sessionId || game.phase === "gameOver") {
       return;
     }
+    if (roomRole === "guest") {
+      return;
+    }
 
     const nextActions = getNextAiActions(game)
       .map((action) => ({ ...action, key: buildAiRequestKey(game, action, sessionId) }))
@@ -382,33 +451,116 @@ export default function App() {
         if (sessionIdRef.current !== requestSessionId) {
           return;
         }
-        const current = gameRef.current;
-        if (!current || current.phase === "gameOver") {
+        const applied = commitGameUpdate((current) => {
+          if (current.phase === "gameOver") {
+            throw new Error("Game is already over");
+          }
+          return applyDecision(current, next.playerId, decision.action);
+        });
+        if (!applied) {
+          // Stale/illegal response; the effect retries from the latest state after finishPendingAi.
           return;
         }
-        try {
-          const nextGame = applyDecision(current, next.playerId, decision.action);
-          if (decision.source === "fallback") {
-            appendLog(fallbackLogText(playerName(current, next.playerId), decision, language), "warning");
-          }
-          if (decision.action.type === "speak") {
-            appendTableTalk(
-              next.playerId,
-              playerName(current, next.playerId),
-              decision.source === "fallback" ? `${decision.speech} (${copy[language].fallback})` : decision.speech
-            );
-          }
-          for (const entry of describePublicActionEvents(current, nextGame, next.playerId, decision.action, language)) {
-            appendLog(entry.text, entry.tone);
-          }
-          gameRef.current = nextGame;
-          setGame(nextGame);
-        } catch {
-          // Ignore illegal/stale AI actions; fallback prompting will retry from the current state.
+        if (decision.source === "fallback") {
+          appendLog(fallbackLogText(playerName(applied.previous, next.playerId), decision, language), "warning");
+        }
+        if (decision.action.type === "speak") {
+          appendTableTalk(
+            next.playerId,
+            playerName(applied.previous, next.playerId),
+            decision.source === "fallback" ? `${decision.speech} (${copy[language].fallback})` : decision.speech
+          );
+        }
+        for (const entry of describePublicActionEvents(applied.previous, applied.next, next.playerId, decision.action, language)) {
+          appendLog(entry.text, entry.tone);
         }
       }).finally(() => finishPendingAi(next.key));
     }
-  }, [game, sessionId, pendingAi, tableTalk, reasoningEffort, language, model, aiConfig]);
+  }, [game, sessionId, pendingAi, tableTalk, reasoningEffort, language, model, aiConfig, roomRole]);
+
+  // Host: mirror the authoritative state to the room service whenever it changes.
+  useEffect(() => {
+    if (roomRole !== "host" || !room || !roomToken || !game || room.status === "lobby") {
+      return;
+    }
+    roomVersionRef.current += 1;
+    void pushRoomStateToServer({
+      code: room.code,
+      token: roomToken,
+      state: { game, tableTalk, log, version: roomVersionRef.current }
+    });
+  }, [game, tableTalk, log, roomRole, roomToken, room?.code, room?.status]);
+
+  // Host: drain queued guest actions and apply them to the latest state.
+  useEffect(() => {
+    if (roomRole !== "host" || !room || !roomToken || !game || game.phase === "gameOver") {
+      return;
+    }
+    const timer = window.setInterval(async () => {
+      const actions = await drainRoomActionsFromServer({ code: room.code, token: roomToken });
+      for (const pending of actions) {
+        applyRemoteAction(pending);
+      }
+    }, 1_000);
+    return () => window.clearInterval(timer);
+  }, [roomRole, room?.code, roomToken, game?.phase]);
+
+  // Lobby members and guests: poll the room snapshot.
+  useEffect(() => {
+    if (!room || !roomToken) {
+      return;
+    }
+    const isLobby = room.status === "lobby";
+    const isGuest = roomRole === "guest";
+    if (!isLobby && !isGuest) {
+      return;
+    }
+    const timer = window.setInterval(async () => {
+      const snapshot = await fetchRoomSnapshot({
+        code: room.code,
+        token: roomToken,
+        sinceVersion: isGuest ? guestVersionRef.current : undefined
+      });
+      if (!snapshot) {
+        return;
+      }
+      setRoom(snapshot);
+      if (isGuest && snapshot.state && snapshot.state.version > guestVersionRef.current) {
+        guestVersionRef.current = snapshot.state.version;
+        gameRef.current = snapshot.state.game;
+        setGame(snapshot.state.game);
+        setGuestKnowledge(snapshot.state.knowledge);
+        setTableTalk(snapshot.state.tableTalk);
+        setLog(snapshot.state.log);
+      }
+    }, isGuest ? 1_000 : 1_500);
+    return () => window.clearInterval(timer);
+  }, [room?.code, room?.status, roomRole, roomToken]);
+
+  function applyRemoteAction(pending: PendingRoomAction): void {
+    const current = gameRef.current;
+    if (!current) {
+      return;
+    }
+    const actor = current.players[pending.seat];
+    if (!actor) {
+      return;
+    }
+    if (pending.talk) {
+      appendTableTalk(actor.id, actor.name, pending.talk);
+    }
+    if (!pending.action) {
+      return;
+    }
+    const action = pending.action;
+    const applied = commitGameUpdate((state) => applyDecision(state, actor.id, action));
+    if (!applied) {
+      return;
+    }
+    for (const entry of describePublicActionEvents(applied.previous, applied.next, actor.id, action, language)) {
+      appendLog(entry.text, entry.tone);
+    }
+  }
 
   function startGame() {
     const resolvedHumanSeat = humanSeat === "random" ? Math.floor(Math.random() * playerCount) : humanSeat;
@@ -423,7 +575,10 @@ export default function App() {
       name: player.isHuman ? copy[language].you : `AI ${player.seat + 1}`
     }));
     setSessionId(newSessionId);
+    sessionIdRef.current = newSessionId;
     setGame(newGame);
+    gameRef.current = newGame;
+    clearPendingAi();
     setSelectedTeam([newGame.players[newGame.leaderIndex].id]);
     setRestoreError("");
     setRestoreId("");
@@ -440,8 +595,19 @@ export default function App() {
   }
 
   function restartGame() {
+    if (room && roomToken) {
+      void leaveRoomOnServer({ code: room.code, token: roomToken });
+    }
+    setRoom(null);
+    setRoomToken(null);
+    setRoomError("");
+    setGuestKnowledge(null);
+    guestVersionRef.current = 0;
+    roomVersionRef.current = 1;
     setSessionId(null);
+    sessionIdRef.current = null;
     setGame(null);
+    gameRef.current = null;
     setSelectedTeam([]);
     clearPendingAi();
     setLog([]);
@@ -450,6 +616,137 @@ export default function App() {
     setRestoreError("");
     setShowAllSessions(false);
     setSavedSessions(listSessions());
+  }
+
+  async function createMultiplayerRoom() {
+    setRoomError("");
+    setRoomBusy(true);
+    try {
+      const code = createSessionId();
+      const created = await createRoomOnServer({
+        code,
+        playerCount,
+        language,
+        name: playerNameInput || copy[language].you
+      });
+      if (!created) {
+        setRoomError(copy[language].roomUnavailable);
+        return;
+      }
+      setRoom(created.snapshot);
+      setRoomToken(created.hostToken);
+    } finally {
+      setRoomBusy(false);
+    }
+  }
+
+  async function joinMultiplayerRoom() {
+    setRoomError("");
+    const code = joinCodeInput.trim().toUpperCase();
+    if (!code) {
+      return;
+    }
+    setRoomBusy(true);
+    try {
+      const joined = await joinRoomOnServer({ code, name: playerNameInput || copy[language].you });
+      if (!joined) {
+        setRoomError(copy[language].roomUnavailable);
+        return;
+      }
+      if ("error" in joined) {
+        setRoomError(joined.error);
+        return;
+      }
+      setRoom(joined.snapshot);
+      setRoomToken(joined.token);
+      setLanguage(joined.snapshot.language);
+    } finally {
+      setRoomBusy(false);
+    }
+  }
+
+  async function toggleRoomReady() {
+    if (!room || !roomToken) {
+      return;
+    }
+    const snapshot = await setRoomReady({ code: room.code, token: roomToken, ready: !room.you.ready });
+    if (snapshot) {
+      setRoom(snapshot);
+    }
+  }
+
+  function leaveMultiplayerRoom() {
+    if (room && roomToken) {
+      void leaveRoomOnServer({ code: room.code, token: roomToken });
+    }
+    setRoom(null);
+    setRoomToken(null);
+    setRoomError("");
+    setGuestKnowledge(null);
+    guestVersionRef.current = 0;
+  }
+
+  async function startMultiplayerMatch() {
+    if (!room || !roomToken || roomRole !== "host") {
+      return;
+    }
+    setRoomError("");
+    setRoomBusy(true);
+    try {
+      const humans = room.members;
+      const seatCount = Math.max(room.playerCount, humans.length);
+      const seats = shuffledSeats(seatCount);
+      const seatByMemberId: Record<string, number> = {};
+      humans.forEach((member, index) => {
+        seatByMemberId[member.id] = seats[index];
+      });
+
+      const newGame = createInitialGame({
+        playerCount: seatCount,
+        humanSeat: seatByMemberId[room.you.id],
+        seed: Date.now()
+      });
+      const nameBySeat = new Map<number, string>(humans.map((member) => [seatByMemberId[member.id], member.name]));
+      newGame.players = newGame.players.map((player) => ({
+        ...player,
+        isHuman: nameBySeat.has(player.seat),
+        name: nameBySeat.get(player.seat) ?? `AI ${player.seat + 1}`
+      }));
+
+      const startLog: LogEntry[] = [{
+        id: Date.now(),
+        tone: "system",
+        text: `${copy[language].started}. ${copy[language].yourRole}: ${roleLabel(newGame.players[newGame.humanSeat].role, language)}.`
+      }];
+      roomVersionRef.current = 1;
+      const result = await startRoomOnServer({
+        code: room.code,
+        token: roomToken,
+        state: { game: newGame, tableTalk: [], log: startLog, version: 1 },
+        seatByMemberId
+      });
+      if (!result) {
+        setRoomError(copy[language].roomUnavailable);
+        return;
+      }
+      if ("error" in result) {
+        setRoomError(result.error);
+        return;
+      }
+
+      setRoom(result);
+      setSessionId(room.code);
+      sessionIdRef.current = room.code;
+      setGame(newGame);
+      gameRef.current = newGame;
+      clearPendingAi();
+      setSelectedTeam([]);
+      setTableTalk([]);
+      setTalkInput("");
+      setLog(startLog);
+    } finally {
+      setRoomBusy(false);
+    }
   }
 
   function restoreGameById(id = restoreId, allowTerminalView = false) {
@@ -464,12 +761,14 @@ export default function App() {
     }
 
     setSessionId(saved.id);
+    sessionIdRef.current = saved.id;
     setPlayerCount(saved.game.playerCount);
     setHumanSeat(saved.game.humanSeat);
     setLanguage(saved.language);
     setReasoningEffort(saved.reasoningEffort);
     setModel(saved.model);
     setGame(saved.game);
+    gameRef.current = saved.game;
     setSelectedTeam(saved.selectedTeam);
     setLog(saved.log);
     setTableTalk(saved.tableTalk ?? []);
@@ -503,6 +802,48 @@ export default function App() {
     setPendingAi([]);
   }
 
+  // All game-state writes go through the authoritative ref first so parallel AI
+  // responses and human actions never overwrite each other's applied actions.
+  // Returns null when there is no game or the rules engine rejects the action.
+  function commitGameUpdate(producer: (current: GameState) => GameState): { previous: GameState; next: GameState } | null {
+    const current = gameRef.current;
+    if (!current) {
+      return null;
+    }
+    let next: GameState;
+    try {
+      next = producer(current);
+    } catch {
+      return null;
+    }
+    gameRef.current = next;
+    setGame(next);
+    return { previous: current, next };
+  }
+
+  // Single-player and multiplayer host apply human actions locally; guests
+  // submit them to the room queue and wait for the host's next state push.
+  function dispatchHumanAction(action: LegalAction, talk?: string): void {
+    if (!game || !human) {
+      return;
+    }
+    if (roomRole === "guest" && room && roomToken) {
+      void submitRoomActionToServer({ code: room.code, token: roomToken, action, ...(talk ? { talk } : {}) });
+      appendLog(copy[language].actionSubmitted, "system");
+      return;
+    }
+    const applied = commitGameUpdate((current) => applyDecision(current, human.id, action));
+    if (!applied) {
+      return;
+    }
+    if (talk) {
+      appendTableTalk(human.id, human.name, talk);
+    }
+    for (const entry of describePublicActionEvents(applied.previous, applied.next, human.id, action, language)) {
+      appendLog(entry.text, entry.tone);
+    }
+  }
+
   function submitHumanTalk() {
     if (!game || !human) {
       return;
@@ -517,14 +858,15 @@ export default function App() {
     if (!canSubmitTalk) {
       return;
     }
-    appendTableTalk(human.id, human.name, text);
     if (game.phase === "discussion" && currentHumanAction === "speak") {
-      const action: LegalAction = { type: "speak" };
-      const nextGame = advanceDiscussionTurn(game, human.id);
-      setGame(nextGame);
-      for (const entry of describePublicActionEvents(game, nextGame, human.id, action, language)) {
-        appendLog(entry.text, entry.tone);
-      }
+      dispatchHumanAction({ type: "speak" }, text);
+      setTalkInput("");
+      return;
+    }
+    if (roomRole === "guest" && room && roomToken) {
+      void submitRoomActionToServer({ code: room.code, token: roomToken, talk: text });
+    } else {
+      appendTableTalk(human.id, human.name, text);
     }
     setTalkInput("");
   }
@@ -548,47 +890,28 @@ export default function App() {
     if (!game || !human || selectedTeam.length !== questConfig?.teamSize) {
       return;
     }
-    const nextGame = proposeTeam(game, human.id, selectedTeam);
-    setGame(nextGame);
-    for (const entry of describePublicActionEvents(game, nextGame, human.id, { type: "proposeTeam", teamIds: selectedTeam }, language)) {
-      appendLog(entry.text, entry.tone);
-    }
+    dispatchHumanAction({ type: "proposeTeam", teamIds: selectedTeam });
   }
 
   function submitHumanVote(approve: boolean) {
     if (!game || !human) {
       return;
     }
-    const action: LegalAction = { type: "vote", approve };
-    const nextGame = castVote(game, human.id, approve);
-    setGame(nextGame);
-    for (const entry of describePublicActionEvents(game, nextGame, human.id, action, language)) {
-      appendLog(entry.text, entry.tone);
-    }
+    dispatchHumanAction({ type: "vote", approve });
   }
 
   function submitHumanQuest(card: QuestCard) {
     if (!game || !human) {
       return;
     }
-    const action: LegalAction = { type: "quest", card };
-    const nextGame = submitQuestCard(game, human.id, card);
-    setGame(nextGame);
-    for (const entry of describePublicActionEvents(game, nextGame, human.id, action, language)) {
-      appendLog(entry.text, entry.tone);
-    }
+    dispatchHumanAction({ type: "quest", card });
   }
 
   function submitHumanAssassination(targetId: string) {
     if (!game || !human) {
       return;
     }
-    const action: LegalAction = { type: "assassinate", targetId };
-    const nextGame = assassinateMerlin(game, human.id, targetId);
-    setGame(nextGame);
-    for (const entry of describePublicActionEvents(game, nextGame, human.id, action, language)) {
-      appendLog(entry.text, entry.tone);
-    }
+    dispatchHumanAction({ type: "assassinate", targetId });
   }
 
   const roleSummary = useMemo(() => {
@@ -693,9 +1016,29 @@ export default function App() {
             />
           </label>
           <div className="button-row">
-            <button className="primary" onClick={startGame} disabled={Boolean(game)}><Send size={16} /> {copy[language].start}</button>
+            <button className="primary" onClick={startGame} disabled={Boolean(game) || Boolean(room)}><Send size={16} /> {copy[language].start}</button>
             <button className="secondary icon-text" onClick={restartGame}><RotateCcw size={16} /> {copy[language].reset}</button>
           </div>
+          {!game && !room && (
+            <div className="config-panel multiplayer-panel">
+              <div className="config-title"><Users size={15} /> {copy[language].multiplayer}</div>
+              <label>
+                <span>{copy[language].yourName}</span>
+                <input value={playerNameInput} onChange={(event) => setPlayerNameInput(event.target.value)} maxLength={24} />
+              </label>
+              <button type="button" className="secondary icon-text" disabled={roomBusy} onClick={() => void createMultiplayerRoom()}>
+                <Users size={16} /> {copy[language].createRoom}
+              </button>
+              <label>
+                <span>{copy[language].roomCode}</span>
+                <input value={joinCodeInput} onChange={(event) => setJoinCodeInput(event.target.value.trim().toUpperCase())} placeholder="AV-YYYYMMDD-0000" />
+              </label>
+              <button type="button" className="secondary icon-text" disabled={roomBusy || !joinCodeInput.trim()} onClick={() => void joinMultiplayerRoom()}>
+                <LogIn size={16} /> {copy[language].joinRoom}
+              </button>
+              {roomError && <p className="restore-error">{roomError}</p>}
+            </div>
+          )}
           <ConfigPanel playerCount={playerCount} language={language} labels={copy[language]} />
           {sessionId && (
             <div className="session-current">
@@ -817,6 +1160,16 @@ export default function App() {
             />
             {game.phase === "gameOver" && <EpiloguePanel game={game} human={human} language={language} labels={copy[language]} />}
           </>
+        ) : room && room.status === "lobby" ? (
+          <RoomLobbyPanel
+            room={room}
+            busy={roomBusy}
+            error={roomError}
+            labels={copy[language]}
+            onToggleReady={() => void toggleRoomReady()}
+            onStart={() => void startMultiplayerMatch()}
+            onLeave={leaveMultiplayerRoom}
+          />
         ) : (
           <div className="empty-table">
             <Swords size={32} />
@@ -851,6 +1204,68 @@ export default function App() {
         </div>
       </aside>
     </main>
+  );
+}
+
+function RoomLobbyPanel(props: {
+  room: RoomSnapshot;
+  busy: boolean;
+  error: string;
+  labels: typeof copy.en;
+  onToggleReady: () => void;
+  onStart: () => void;
+  onLeave: () => void;
+}) {
+  const { room, labels } = props;
+  const allReady = room.members.every((member) => member.isHost || member.ready);
+  const humanCount = room.members.length;
+  return (
+    <div className="lobby-panel">
+      <div className="lobby-header">
+        <Users size={22} />
+        <div>
+          <h2>{labels.lobbyTitle}</h2>
+          <p className="muted-text">{labels.shareCode}</p>
+        </div>
+      </div>
+      <div className="lobby-code">
+        <span>{labels.roomCode}</span>
+        <strong>{room.code}</strong>
+      </div>
+      <div className="lobby-members">
+        {room.members.map((member) => (
+          <div key={member.id} className={`lobby-member ${member.ready || member.isHost ? "ready" : ""}`}>
+            <span className="lobby-member-name">
+              {member.name}
+              {member.isHost && <em>{labels.hostBadge}</em>}
+            </span>
+            <span className="lobby-member-state">{member.isHost || member.ready ? labels.readyState : labels.notReadyState}</span>
+          </div>
+        ))}
+        {Array.from({ length: Math.max(0, room.playerCount - humanCount) }, (_, index) => (
+          <div key={`ai-${index}`} className="lobby-member ai-seat">
+            <span className="lobby-member-name">AI</span>
+            <span className="lobby-member-state">{labels.aiSeatsNote}</span>
+          </div>
+        ))}
+      </div>
+      <div className="button-row">
+        {!room.you.isHost && (
+          <button type="button" className={room.you.ready ? "secondary" : "primary"} onClick={props.onToggleReady}>
+            {room.you.ready ? labels.cancelReady : labels.readyBtn}
+          </button>
+        )}
+        {room.you.isHost && (
+          <button type="button" className="primary" disabled={!allReady || props.busy} onClick={props.onStart}>
+            <Send size={16} /> {labels.startMatch}
+          </button>
+        )}
+        <button type="button" className="secondary" onClick={props.onLeave}>{labels.leaveRoom}</button>
+      </div>
+      {!room.you.isHost && <p className="muted-text">{labels.waitingHost}</p>}
+      {room.you.isHost && !allReady && <p className="muted-text">{labels.waitingAllReady}</p>}
+      {props.error && <p className="restore-error">{props.error}</p>}
+    </div>
   );
 }
 
@@ -934,7 +1349,17 @@ function DecisionPanel(props: {
   labels: typeof copy.en;
 }) {
   if (!props.human || props.game.phase === "gameOver") {
-    return <div className="decision-panel result-panel"><strong>{props.game.winner?.toUpperCase()} {props.labels.wins}</strong><span>{props.game.winReason}</span></div>;
+    const winnerLabel = props.game.winner
+      ? props.labels.approveCount === "同意"
+        ? props.game.winner === "good" ? "好人阵营" : "邪恶阵营"
+        : props.game.winner.toUpperCase()
+      : "";
+    return (
+      <div className="decision-panel result-panel">
+        <strong>{winnerLabel} {props.labels.wins}</strong>
+        <span>{winReasonLabel(props.game.winReason, props.labels)}</span>
+      </div>
+    );
   }
   if (props.currentAction === "proposeTeam") {
     return (
@@ -1018,10 +1443,19 @@ function QuestTrack({ game, language }: { game: GameState; language: TableLangua
           <div key={index} className={`quest-node ${result ? result.succeeded ? "success" : "fail" : index === game.questIndex ? "current" : ""}`}>
             <strong>Q{index + 1}</strong>
             <span>{quest.teamSize} {seatsLabel}</span>
-            <small>{quest.failsRequired} {failLabel}{language === "en" && quest.failsRequired > 1 ? "s" : ""}</small>
+            <small>
+              {result
+                ? `${result.failCards} ${failLabel}${language === "en" && result.failCards !== 1 ? "s" : ""}`
+                : `${quest.failsRequired} ${failLabel}${language === "en" && quest.failsRequired > 1 ? "s" : ""}`}
+            </small>
           </div>
         );
       })}
+      <div className="vote-track" title={language === "zh" ? "连续否决轨道" : "Rejected vote track"}>
+        {Array.from({ length: 5 }, (_, index) => (
+          <span key={index} className={`vote-track-dot ${index < game.failedVotes ? "used" : ""}`} />
+        ))}
+      </div>
     </div>
   );
 }
@@ -1121,7 +1555,7 @@ function visibleRole(game: GameState, player: Player, human: Player | undefined,
   if (game.phase === "gameOver" || player.id === human?.id) {
     return roleLabel(player.role, language);
   }
-  return player.isHuman ? copy[language].you : copy[language].unknownRole;
+  return player.isHuman ? copy[language].humanPlayer : copy[language].unknownRole;
 }
 
 function roleSkillText(player: Player, language: TableLanguage): string {
@@ -1199,8 +1633,34 @@ function playerToneClassById(playerId: string): string {
   return `player-tone-${Math.max(0, seat) % 10}`;
 }
 
+function winReasonLabel(reason: GameState["winReason"], labels: typeof copy.en): string {
+  const zh = labels.approveCount === "同意";
+  if (reason === "questSuccesses") {
+    return zh ? "三次任务成功，刺杀未命中梅林" : "Three quests succeeded and Merlin survived";
+  }
+  if (reason === "questFailures") {
+    return zh ? "三次任务失败" : "Three quests failed";
+  }
+  if (reason === "voteTrack") {
+    return zh ? "连续五次否决队伍" : "Five consecutive rejected proposals";
+  }
+  if (reason === "assassination") {
+    return zh ? "刺客成功刺杀梅林" : "The Assassin found Merlin";
+  }
+  return "";
+}
+
 function playerName(game: GameState, playerId: string): string {
   return game.players.find((player) => player.id === playerId)?.name ?? playerId;
+}
+
+function shuffledSeats(count: number): number[] {
+  const seats = Array.from({ length: count }, (_, index) => index);
+  for (let index = seats.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [seats[index], seats[swapIndex]] = [seats[swapIndex], seats[index]];
+  }
+  return seats;
 }
 
 function fallbackLogText(name: string, decision: AiDecisionResult, language: TableLanguage): string {
@@ -1319,8 +1779,14 @@ function buildAiRequestKey(game: GameState, action: { playerId: string; actionKi
   ].join(":");
 }
 
-function getPendingAiPlayers(game: GameState, pendingAi: string[]): Player[] {
-  const ids = new Set(pendingAi.map((key) => key.split(":")[0]).filter(Boolean));
+function getPendingAiPlayers(game: GameState, pendingAi: string[], sessionId: string): Player[] {
+  const ids = new Set(
+    pendingAi
+      .map((key) => key.split(":"))
+      .filter((parts) => parts[2] === sessionId)
+      .map((parts) => parts[0])
+      .filter(Boolean)
+  );
   return game.players.filter((player) => ids.has(player.id));
 }
 

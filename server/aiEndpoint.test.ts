@@ -1,9 +1,14 @@
 import { advanceDiscussionTurn, castVote, createInitialGame, proposeTeam } from "../src/game/rules";
 import { createAiActionResult, effectiveReasoningEffortForAction } from "./aiEndpoint";
+import { resetOpenAIProtocolPreferences } from "./openaiCompatible";
 import type { OpenAICompatibleConfig } from "./env";
 
 describe("AI endpoint orchestration", () => {
   const state = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
+
+  beforeEach(() => {
+    resetOpenAIProtocolPreferences();
+  });
 
   it("uses fallback when API config is missing", async () => {
     const result = await createAiActionResult({
@@ -46,7 +51,7 @@ describe("AI endpoint orchestration", () => {
 
     expect(result).toMatchObject({ source: "model", action: { type: "vote", approve: true } });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    expect(fetchImpl.mock.calls[0][0]).toBe("https://manual.example/v1/chat/completions");
+    expect(fetchImpl.mock.calls[0][0]).toBe("https://manual.example/v1/responses");
     expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBe("Bearer manual-key");
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe("model-body");
   });
@@ -148,14 +153,14 @@ describe("AI endpoint orchestration", () => {
 
     const voteBody = JSON.parse(fetchImpl.mock.calls[0][1].body);
     const assassinateBody = JSON.parse(fetchImpl.mock.calls[1][1].body);
-    expect(voteBody.reasoning_effort).toBe("medium");
-    expect(voteBody.messages[1].content).toContain("A=v R=m:");
+    expect(voteBody.reasoning).toEqual({ effort: "medium" });
+    expect(voteBody.input[1].content).toContain("A=v R=m:");
     expect(questResult).toMatchObject({ source: "local", action: { type: "quest", card: "fail" } });
     expect(effectiveReasoningEffortForAction("vote", "xhigh")).toBe("medium");
     expect(effectiveReasoningEffortForAction("speak", "high")).toBe("medium");
     expect(effectiveReasoningEffortForAction("quest", "xhigh")).toBe("low");
-    expect(assassinateBody.reasoning_effort).toBe("xhigh");
-    expect(assassinateBody.messages[1].content).toContain("A=as R=x:");
+    expect(assassinateBody.reasoning).toEqual({ effort: "xhigh" });
+    expect(assassinateBody.input[1].content).toContain("A=as R=x:");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 

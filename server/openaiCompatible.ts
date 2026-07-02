@@ -8,11 +8,23 @@ interface CallOpenAIInput {
   fetchImpl?: typeof fetch;
 }
 
-interface ChatCompletionResponse {
+type ApiProtocol = "responses" | "chat";
+
+interface ProviderResponseBody {
+  // Chat Completions shape
   choices?: Array<{
     message?: {
       content?: string;
     };
+  }>;
+  // Responses API shape
+  output_text?: string;
+  output?: Array<{
+    type?: string;
+    content?: Array<{
+      type?: string;
+      text?: string;
+    }>;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -24,10 +36,25 @@ interface ChatCompletionResponse {
     completion_tokens_details?: {
       reasoning_tokens?: number;
     };
+    input_tokens?: number;
+    output_tokens?: number;
+    input_tokens_details?: {
+      cached_tokens?: number;
+    };
+    output_tokens_details?: {
+      reasoning_tokens?: number;
+    };
   };
 }
 
 const TRANSIENT_HTTP_ATTEMPTS = 3;
+
+// Remembered per base URL so a provider without /responses only pays the probe once per process.
+const protocolPreferenceByBaseURL = new Map<string, ApiProtocol>();
+
+export function resetOpenAIProtocolPreferences(): void {
+  protocolPreferenceByBaseURL.clear();
+}
 
 export interface OpenAICompatibleResult {
   content: string;
@@ -59,13 +86,13 @@ export async function callOpenAICompatibleWithUsage(input: CallOpenAIInput): Pro
   const startedAt = Date.now();
   let attempts = 0;
   const fetchImpl = input.fetchImpl ?? fetch;
-  const postWithBudget = async (payload: Record<string, unknown>) => {
+  const postWithBudget = async (protocol: ApiProtocol, payload: Record<string, unknown>) => {
     const remainingAttempts = TRANSIENT_HTTP_ATTEMPTS - attempts;
     if (remainingAttempts <= 0) {
       throw new OpenAICompatibleError("OpenAI-compatible retry budget exhausted", "api-http-error");
     }
     try {
-      const result = await postChatCompletionWithRetries(input.config, payload, fetchImpl, remainingAttempts);
+      const result = await postModelRequestWithRetries(input.config, protocol, payload, fetchImpl, remainingAttempts);
       attempts += result.attempts;
       return result;
     } catch (error) {
@@ -77,32 +104,31 @@ export async function callOpenAICompatibleWithUsage(input: CallOpenAIInput): Pro
   };
 
   try {
-    const firstPayload = buildChatCompletionPayload(input.config.model, input.messages, input.reasoningEffort);
-    const first = await postWithBudget(firstPayload);
+    let protocol: ApiProtocol = protocolPreferenceByBaseURL.get(input.config.baseURL) ?? "responses";
+    let payload = buildModelRequestPayload(protocol, input.config.model, input.messages, input.reasoningEffort);
+    let latest = await postWithBudget(protocol, payload);
 
-    if (!first.ok && shouldRetryWithoutReasoning(first.status, first.text)) {
-      const retryPayload = buildChatCompletionPayload(input.config.model, input.messages);
-      const retry = await postWithBudget(retryPayload);
-      if (!retry.ok) {
-        throw withOpenAITiming(
-          new OpenAICompatibleError(`OpenAI-compatible request failed (${retry.status}): ${retry.text}`, "api-http-error"),
-          startedAt,
-          attempts
-        );
-      }
-
-      return withResultTiming(parseChatCompletionResult(retry.text), startedAt, attempts);
+    if (!latest.ok && protocol === "responses" && isProtocolUnsupported(latest.status, latest.text)) {
+      protocol = "chat";
+      payload = buildModelRequestPayload(protocol, input.config.model, input.messages, input.reasoningEffort);
+      latest = await postWithBudget(protocol, payload);
     }
 
-    if (!first.ok) {
+    if (!latest.ok && shouldRetryWithoutReasoning(latest.status, latest.text)) {
+      payload = buildModelRequestPayload(protocol, input.config.model, input.messages);
+      latest = await postWithBudget(protocol, payload);
+    }
+
+    if (!latest.ok) {
       throw withOpenAITiming(
-        new OpenAICompatibleError(`OpenAI-compatible request failed (${first.status}): ${first.text}`, "api-http-error"),
+        new OpenAICompatibleError(`OpenAI-compatible request failed (${latest.status}): ${latest.text}`, "api-http-error"),
         startedAt,
         attempts
       );
     }
 
-    return withResultTiming(parseChatCompletionResult(first.text), startedAt, attempts);
+    protocolPreferenceByBaseURL.set(input.config.baseURL, protocol);
+    return withResultTiming(parseModelResponseResult(latest.text), startedAt, attempts);
   } catch (error) {
     if (error instanceof OpenAICompatibleError) {
       throw withOpenAITiming(error, startedAt, error.attempts ?? attempts);
@@ -121,8 +147,29 @@ export function buildChatCompletionPayload(model: string, messages: ChatMessage[
   };
 }
 
-async function postChatCompletionWithRetries(
+export function buildResponsesPayload(model: string, messages: ChatMessage[], reasoningEffort?: ReasoningEffort): Record<string, unknown> {
+  return {
+    model,
+    input: messages.map((message) => ({ role: message.role, content: message.content })),
+    ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+    text: { format: { type: "json_object" } },
+    store: false
+  };
+}
+
+function buildModelRequestPayload(protocol: ApiProtocol, model: string, messages: ChatMessage[], reasoningEffort?: ReasoningEffort): Record<string, unknown> {
+  return protocol === "responses"
+    ? buildResponsesPayload(model, messages, reasoningEffort)
+    : buildChatCompletionPayload(model, messages, reasoningEffort);
+}
+
+function protocolPath(protocol: ApiProtocol): string {
+  return protocol === "responses" ? "/responses" : "/chat/completions";
+}
+
+async function postModelRequestWithRetries(
   config: OpenAICompatibleConfig,
+  protocol: ApiProtocol,
   payload: Record<string, unknown>,
   fetchImpl: typeof fetch,
   maxAttempts = TRANSIENT_HTTP_ATTEMPTS
@@ -133,7 +180,7 @@ async function postChatCompletionWithRetries(
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     attempts = attempt;
     try {
-      latest = await postChatCompletion(config, payload, fetchImpl);
+      latest = await postModelRequest(config, protocol, payload, fetchImpl);
     } catch (error) {
       if (error instanceof OpenAICompatibleError && isTransientTransportError(error) && attempt < maxAttempts) {
         latestError = error;
@@ -154,12 +201,13 @@ async function postChatCompletionWithRetries(
     latestError.attempts = attempts;
     throw latestError;
   }
-  latest = latest ?? await postChatCompletion(config, payload, fetchImpl);
+  latest = latest ?? await postModelRequest(config, protocol, payload, fetchImpl);
   return { ...latest, attempts: Math.max(attempts, 1) };
 }
 
-async function postChatCompletion(
+async function postModelRequest(
   config: OpenAICompatibleConfig,
+  protocol: ApiProtocol,
   payload: Record<string, unknown>,
   fetchImpl: typeof fetch
 ): Promise<{ ok: boolean; status: number; text: string }> {
@@ -167,8 +215,9 @@ async function postChatCompletion(
   const timer = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
     let response: Response;
+    let text: string;
     try {
-      response = await fetchImpl(joinOpenAIPath(config.baseURL, "/chat/completions"), {
+      response = await fetchImpl(joinOpenAIPath(config.baseURL, protocolPath(protocol)), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -177,6 +226,7 @@ async function postChatCompletion(
         body: JSON.stringify(payload),
         signal: controller.signal
       });
+      text = await response.text();
     } catch (error) {
       if (error instanceof OpenAICompatibleError) {
         throw error;
@@ -190,15 +240,22 @@ async function postChatCompletion(
     return {
       ok: response.ok,
       status: response.status,
-      text: await response.text()
+      text
     };
   } finally {
     clearTimeout(timer);
   }
 }
 
+function isProtocolUnsupported(status: number, body: string): boolean {
+  if (status === 404 || status === 405) {
+    return true;
+  }
+  return status >= 400 && status < 500 && /unknown request url|invalid url|no such route|not found|unknown endpoint|does not exist/i.test(body);
+}
+
 function shouldRetryWithoutReasoning(status: number, body: string): boolean {
-  return status >= 400 && status < 500 && /reasoning[_\s-]*effort|unrecognized|unknown parameter|unsupported/i.test(body);
+  return status >= 400 && status < 500 && /reasoning|temperature|unrecognized|unknown parameter|unsupported/i.test(body);
 }
 
 function isTransientHttpStatus(status: number): boolean {
@@ -217,20 +274,16 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function parseChatCompletionContent(body: string): string {
-  return parseChatCompletionResult(body).content;
-}
-
-function parseChatCompletionResult(body: string): OpenAICompatibleResult {
-  let parsed: ChatCompletionResponse;
+function parseModelResponseResult(body: string): OpenAICompatibleResult {
+  let parsed: ProviderResponseBody;
   try {
-    parsed = JSON.parse(body) as ChatCompletionResponse;
+    parsed = JSON.parse(body) as ProviderResponseBody;
   } catch {
     throw new OpenAICompatibleError("OpenAI-compatible response was not valid JSON", "api-invalid-response");
   }
-  const content = parsed.choices?.[0]?.message?.content;
+  const content = parsed.choices?.[0]?.message?.content || extractResponsesOutputText(parsed);
   if (!content) {
-    throw new OpenAICompatibleError("OpenAI-compatible response did not include choices[0].message.content", "api-empty-response");
+    throw new OpenAICompatibleError("OpenAI-compatible response did not include message content or output_text", "api-empty-response");
   }
 
   const usage = normalizeUsage(parsed.usage);
@@ -239,6 +292,21 @@ function parseChatCompletionResult(body: string): OpenAICompatibleResult {
     ...(usage ? { usage } : {}),
     timing: { durationMs: 0, attempts: 0 }
   };
+}
+
+function extractResponsesOutputText(parsed: ProviderResponseBody): string {
+  if (typeof parsed.output_text === "string" && parsed.output_text) {
+    return parsed.output_text;
+  }
+  if (!Array.isArray(parsed.output)) {
+    return "";
+  }
+  return parsed.output
+    .filter((item) => item?.type === "message" && Array.isArray(item.content))
+    .flatMap((item) => item.content ?? [])
+    .filter((part) => part?.type === "output_text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("");
 }
 
 function withResultTiming(result: OpenAICompatibleResult, startedAt: number, attempts: number): OpenAICompatibleResult {
@@ -261,16 +329,24 @@ function elapsedMs(startedAt: number): number {
   return Math.max(0, Date.now() - startedAt);
 }
 
-function normalizeUsage(usage: ChatCompletionResponse["usage"]): AiApiUsage | undefined {
+function normalizeUsage(usage: ProviderResponseBody["usage"]): AiApiUsage | undefined {
   if (!usage) {
     return undefined;
   }
+  const promptTokens = numberOrUndefined(usage.prompt_tokens) ?? numberOrUndefined(usage.input_tokens);
+  const completionTokens = numberOrUndefined(usage.completion_tokens) ?? numberOrUndefined(usage.output_tokens);
+  const totalTokens = numberOrUndefined(usage.total_tokens)
+    ?? (promptTokens !== undefined && completionTokens !== undefined ? promptTokens + completionTokens : undefined);
+  const cachedPromptTokens = numberOrUndefined(usage.prompt_tokens_details?.cached_tokens)
+    ?? numberOrUndefined(usage.input_tokens_details?.cached_tokens);
+  const reasoningTokens = numberOrUndefined(usage.completion_tokens_details?.reasoning_tokens)
+    ?? numberOrUndefined(usage.output_tokens_details?.reasoning_tokens);
   const normalized: AiApiUsage = {
-    ...(numberOrUndefined(usage.prompt_tokens) !== undefined ? { promptTokens: usage.prompt_tokens } : {}),
-    ...(numberOrUndefined(usage.completion_tokens) !== undefined ? { completionTokens: usage.completion_tokens } : {}),
-    ...(numberOrUndefined(usage.total_tokens) !== undefined ? { totalTokens: usage.total_tokens } : {}),
-    ...(numberOrUndefined(usage.prompt_tokens_details?.cached_tokens) !== undefined ? { cachedPromptTokens: usage.prompt_tokens_details?.cached_tokens } : {}),
-    ...(numberOrUndefined(usage.completion_tokens_details?.reasoning_tokens) !== undefined ? { reasoningTokens: usage.completion_tokens_details?.reasoning_tokens } : {})
+    ...(promptTokens !== undefined ? { promptTokens } : {}),
+    ...(completionTokens !== undefined ? { completionTokens } : {}),
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(cachedPromptTokens !== undefined ? { cachedPromptTokens } : {}),
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {})
   };
   return Object.keys(normalized).length ? normalized : undefined;
 }
