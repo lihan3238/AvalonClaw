@@ -19,10 +19,10 @@ interface RequestAiActionInput {
 }
 
 // Hard client-side ceiling so a hung connection can never leave a seat "thinking" forever.
-// The per-action default from clientAiTimeoutMsFor stays above the server's
-// effort-scaled single-attempt window; this constant is only the legacy export
-// used by tests and callers that pass an explicit timeoutMs.
-export const CLIENT_AI_REQUEST_TIMEOUT_MS = 360_000;
+// The per-action default from clientAiTimeoutMsFor matches the server's
+// four-minute window; this constant is only the legacy export used by tests
+// and callers that pass an explicit timeoutMs.
+export const CLIENT_AI_REQUEST_TIMEOUT_MS = 240_000;
 
 export async function requestAiAction(input: RequestAiActionInput): Promise<AiDecisionResult> {
   const fallback = chooseFallbackDecision(input.state, input.playerId, input.actionKind, input.language);

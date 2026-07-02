@@ -18,12 +18,11 @@ lihan-cards mode: engineering
   when the provider has no Responses route; the working protocol is memoized
   per base URL and all fallbacks share one 3-attempt retry budget
   (`server/openaiCompatible.ts`).
-- Upstream and browser timeouts scale with the effective reasoning effort
-  (`src/ai/effort.ts`): one upstream attempt gets 90s/120s/180s/300s for
-  low/medium/high/xhigh, timed-out attempts are never retried (only transport
-  errors and transient HTTP statuses are), and the browser waits the same
-  window plus 60s headroom per action. Per-action effort caps also live there
-  (quest→low, speak/vote→medium max, proposeTeam/assassinate→high max).
+- Upstream and browser AI request timeouts are fixed at 4 minutes
+  (`src/ai/effort.ts`); timed-out upstream attempts are never retried (only
+  transport errors and transient HTTP statuses are). Per-action effort caps
+  also live there (quest→low, speak/vote→medium max,
+  proposeTeam/assassinate→high max).
 
 ## Multiplayer
 

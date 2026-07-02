@@ -21,7 +21,7 @@ dotenv.config();
 
 const runRealApi = process.env.AVALON_REAL_API_GAMES === "1";
 const maybeDescribe = runRealApi ? describe : describe.skip;
-const realApiTimeoutMs = readPositiveInt("AVALON_REAL_API_TIMEOUT_MS", 3_600_000);
+const realApiTimeoutMs = readPositiveInt("AVALON_REAL_API_TIMEOUT_MS", 240_000);
 
 interface TraceEntry {
   step: number;

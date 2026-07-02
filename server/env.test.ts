@@ -12,7 +12,7 @@ describe("OpenAI-compatible env config", () => {
       baseURL: "https://example.test/v1",
       apiKey: "key",
       model: "model-a",
-      timeoutMs: 90_000
+      timeoutMs: 240_000
     });
   });
 

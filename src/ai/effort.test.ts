@@ -11,18 +11,18 @@ describe("reasoning effort policy", () => {
     expect(effectiveReasoningEffortForAction("assassinate", "high")).toBe("high");
   });
 
-  it("scales the upstream request window with reasoning effort", () => {
-    expect(upstreamTimeoutMsForEffort("low")).toBe(90_000);
-    expect(upstreamTimeoutMsForEffort("medium")).toBe(120_000);
-    expect(upstreamTimeoutMsForEffort("high")).toBe(180_000);
-    expect(upstreamTimeoutMsForEffort("xhigh")).toBe(300_000);
+  it("uses one four-minute upstream request window for every reasoning effort", () => {
+    expect(upstreamTimeoutMsForEffort("low")).toBe(240_000);
+    expect(upstreamTimeoutMsForEffort("medium")).toBe(240_000);
+    expect(upstreamTimeoutMsForEffort("high")).toBe(240_000);
+    expect(upstreamTimeoutMsForEffort("xhigh")).toBe(240_000);
   });
 
-  it("keeps the browser ceiling above the server window for the effective effort", () => {
+  it("keeps the browser ceiling at four minutes for the effective effort", () => {
     expect(clientAiTimeoutMsFor("proposeTeam", "xhigh")).toBe(240_000);
-    expect(clientAiTimeoutMsFor("vote", "xhigh")).toBe(180_000);
-    expect(clientAiTimeoutMsFor("quest", "xhigh")).toBe(150_000);
-    expect(clientAiTimeoutMsFor("proposeTeam", "low")).toBe(150_000);
+    expect(clientAiTimeoutMsFor("vote", "xhigh")).toBe(240_000);
+    expect(clientAiTimeoutMsFor("quest", "xhigh")).toBe(240_000);
+    expect(clientAiTimeoutMsFor("proposeTeam", "low")).toBe(240_000);
     expect(clientAiTimeoutMsFor("assassinate", "xhigh")).toBe(240_000);
   });
 });

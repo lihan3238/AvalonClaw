@@ -10,13 +10,13 @@ export function readOpenAIConfigFromEnv(env: Record<string, string | undefined> 
   const baseURL = stripTrailingSlash(normalized.OPENAI_BASE_URL ?? normalized.base_url ?? normalized.BASE_URL ?? "https://api.openai.com/v1");
   const apiKey = normalized.OPENAI_API_KEY ?? normalized.API_KEY ?? "";
   const model = normalized.OPENAI_MODEL ?? normalized.MODEL ?? "gpt-5.4-mini";
-  const timeoutMs = Number.parseInt(normalized.OPENAI_TIMEOUT_MS ?? "90000", 10);
+  const timeoutMs = Number.parseInt(normalized.OPENAI_TIMEOUT_MS ?? "240000", 10);
 
   return {
     baseURL,
     apiKey,
     model,
-    timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 90000
+    timeoutMs: Number.isFinite(timeoutMs) ? timeoutMs : 240000
   };
 }
 
