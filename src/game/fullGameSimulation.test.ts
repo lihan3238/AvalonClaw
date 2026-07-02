@@ -2,6 +2,7 @@ import { chooseFallbackDecision } from "../ai/fallback";
 import type { AiActionKind, LegalAction } from "../ai/types";
 import {
   assassinateMerlin,
+  advanceDiscussionTurn,
   castVote,
   createInitialGame,
   getFailedQuestCount,
@@ -24,7 +25,7 @@ describe("fallback agent full-game simulations", () => {
         expect(result.final.phase).toBe("gameOver");
         expect(result.final.winner).toMatch(/good|evil/);
         expect(result.final.winReason).toMatch(/questSuccesses|questFailures|voteTrack|assassination/);
-        expect(result.steps).toBeLessThan(250);
+        expect(result.steps).toBeLessThan(650);
       }
     }
 
@@ -40,7 +41,7 @@ function playFallbackGame(playerCount: number, seed: number): { final: GameState
     seed
   });
 
-  for (let steps = 0; steps < 250; steps += 1) {
+  for (let steps = 0; steps < 650; steps += 1) {
     assertStateInvariants(state);
     if (state.phase === "gameOver") {
       return { final: state, steps };
@@ -57,6 +58,10 @@ function playFallbackGame(playerCount: number, seed: number): { final: GameState
 function getNextAutoplayAction(state: GameState): { playerId: string; actionKind: AiActionKind } {
   if (state.phase === "proposal") {
     return { playerId: state.players[state.leaderIndex].id, actionKind: "proposeTeam" };
+  }
+  if (state.phase === "discussion" && state.discussion) {
+    const speaker = state.players[state.discussion.nextSpeakerIndex];
+    return { playerId: speaker.id, actionKind: "speak" };
   }
   if (state.phase === "voting") {
     const voter = state.players.find((player) => !state.votes[player.id]);
@@ -83,6 +88,9 @@ function getNextAutoplayAction(state: GameState): { playerId: string; actionKind
 function applyLegalAction(state: GameState, playerId: string, action: LegalAction): GameState {
   if (action.type === "proposeTeam") {
     return proposeTeam(state, playerId, action.teamIds);
+  }
+  if (action.type === "speak") {
+    return advanceDiscussionTurn(state, playerId);
   }
   if (action.type === "vote") {
     return castVote(state, playerId, action.approve);

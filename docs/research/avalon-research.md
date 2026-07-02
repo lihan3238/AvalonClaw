@@ -20,6 +20,8 @@ Last updated: 2026-07-01.
 - OpenAI structured outputs guide: `https://developers.openai.com/api/docs/guides/structured-outputs`
 - Avalon online rulebook mirror: `https://avalon.fun/pdfs/rules.pdf`
 - Dized rules, game end and winning: `https://rules.dized.com/game/rZluqS52QmGdpoVxcmVLtg/K_MlLyWiS_yuZsA5erj9nA/game-end-and-winning`
+- Dized rules, discussion and secret information: `https://rules.dized.com/game/rZluqS52QmGdpoVxcmVLtg/wSUXl7DMRYChqUEfD0eXUQ/discussion-and-secret-information`
+- Dized rules, casting votes: `https://rules.dized.com/game/rZluqS52QmGdpoVxcmVLtg/CHJOFZ5YTo-uqMwKaxtIzw/casting-votes`
 - Dized rules, result of voting: `https://rules.dized.com/game/rZluqS52QmGdpoVxcmVLtg/V3eSkuHJSIi-qfEWDXPTAw/result-of-voting`
 - BoardGameGeek rules discussion quoting Assassin card wording: `https://boardgamegeek.com/thread/1210990/two-rule-questions-additional-roles-and-assassin-c`
 - BoardGames StackExchange endgame answer quoting the same rulebook wording: `https://boardgames.stackexchange.com/questions/21425/end-of-game-questions`
@@ -35,6 +37,7 @@ Last updated: 2026-07-01.
 - Player count: 5-10.
 - Teams: Good and Evil. Good needs three successful quests. Evil wins if three quests fail, five consecutive team proposals are rejected, or Assassin identifies Merlin after three successful quests.
 - Team proposal flow: current leader proposes a quest team of exact required size, all players publicly vote approve/reject, strict majority approves.
+- Discussion/speech order: the rulebook only requires "appropriate discussion" before the leader calls for the team vote; it does not require one fixed clockwise speech round, nor a separate mandatory speech phase before team selection.
 - Quest flow: selected team members secretly submit success/fail. Good roles must submit success. Evil roles may submit success or fail. One fail fails most quests; in 7-10 player games, quest 4 requires two fail cards.
 - Vote track interpretation: Evil wins after five consecutive rejected team votes in one round. Some online Avalon variants describe the fifth leader as choosing without a vote; this project follows the original Avalon rulebook/Dized wording.
 - Assassination interpretation: after three successful quests, the Assassin names one Good player as Merlin. The legal target list excludes Evil players, including hidden Evil roles such as Oberon.
@@ -76,7 +79,7 @@ Last updated: 2026-07-01.
 ## Implementation Decisions
 
 - Keep the rule engine deterministic and fully local. The LLM never changes rules directly; it only proposes actions from a legal action list.
-- Keep OpenAI-compatible calls on the local Node/Vite server side. The browser never receives `OPENAI_API_KEY`.
+- Keep OpenAI-compatible calls on the local Node/Vite server side. The browser owns the user-entered `baseURL` and `apiKey` runtime config and sends it with each `/api/ai-action` request; deployment does not provide `OPENAI_API_KEY`.
 - Default to Chat Completions for broad compatibility with OpenAI-compatible providers, while passing `reasoning_effort` when configured and retrying without it if the provider rejects that parameter.
 - Expose a UI control for thinking strength. It changes both the prompt budget instructions and the API reasoning effort value.
 - Validate every AI response. If the response is malformed, illegal, too slow, or unavailable, use a local heuristic fallback and record that fallback in the table log.

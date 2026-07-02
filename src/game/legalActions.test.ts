@@ -1,4 +1,4 @@
-import { createInitialGame, proposeTeam, castVote, submitQuestCard } from "./rules";
+import { advanceDiscussionTurn, createInitialGame, proposeTeam, castVote, submitQuestCard } from "./rules";
 import { getLegalActionsForPlayer } from "./legalActions";
 
 describe("legal action generation", () => {
@@ -25,6 +25,7 @@ describe("legal action generation", () => {
     expect(() => getLegalActionsForPlayer(state, "p1", "vote")).toThrow(/voting phase/i);
 
     state = proposeTeam(state, "p1", ["p1", "p2"]);
+    state = finishDiscussion(state);
     expect(getLegalActionsForPlayer(state, "p1", "vote")).toEqual([{ type: "vote", approve: true }, { type: "vote", approve: false }]);
     state = castVote(state, "p1", true);
     expect(() => getLegalActionsForPlayer(state, "p1", "vote")).toThrow(/already voted/i);
@@ -35,6 +36,7 @@ describe("legal action generation", () => {
   it("limits quest cards by allegiance", () => {
     let state = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
     state = proposeTeam(state, "p1", ["p1", "p4"]);
+    state = finishDiscussion(state);
     for (const player of state.players) {
       state = castVote(state, player.id, true);
     }
@@ -71,4 +73,24 @@ describe("legal action generation", () => {
     expect(() => getLegalActionsForPlayer(state, "p1", "assassinate")).toThrow(/only the Assassin/i);
     expect(() => getLegalActionsForPlayer(premature, "p4", "assassinate")).toThrow(/three successful quests/i);
   });
+
+  it("only lets the current ordered discussion speaker generate speak actions", () => {
+    let state = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
+    state = proposeTeam(state, "p1", ["p1", "p2"]);
+
+    expect(getLegalActionsForPlayer(state, "p1", "speak")).toEqual([{ type: "speak" }]);
+    expect(() => getLegalActionsForPlayer(state, "p2", "speak")).toThrow(/current discussion speaker/i);
+    state = advanceDiscussionTurn(state, "p1");
+    expect(getLegalActionsForPlayer(state, "p2", "speak")).toEqual([{ type: "speak" }]);
+    expect(() => getLegalActionsForPlayer(state, "p1", "speak")).toThrow(/current discussion speaker/i);
+  });
 });
+
+function finishDiscussion(state: ReturnType<typeof createInitialGame>) {
+  let next = state;
+  while (next.phase === "discussion") {
+    const speaker = next.players[next.discussion?.nextSpeakerIndex ?? 0];
+    next = advanceDiscussionTurn(next, speaker.id);
+  }
+  return next;
+}

@@ -1,4 +1,4 @@
-import { castVote, createInitialGame, proposeTeam } from "../src/game/rules";
+import { advanceDiscussionTurn, castVote, createInitialGame, proposeTeam } from "../src/game/rules";
 import { createAiActionResult, effectiveReasoningEffortForAction } from "./aiEndpoint";
 import type { OpenAICompatibleConfig } from "./env";
 
@@ -13,13 +13,42 @@ describe("AI endpoint orchestration", () => {
         actionKind: "proposeTeam",
         legalActions: [{ type: "proposeTeam", teamIds: ["p1", "p2"] }],
         reasoningEffort: "medium"
-      },
-      config: { baseURL: "https://example.test/v1", apiKey: "", model: "model-a", timeoutMs: 1000 }
+      }
     });
 
     expect(result.source).toBe("fallback");
     expect(result.fallbackReason).toBe("missing-config");
     expect(result.action).toEqual({ type: "proposeTeam", teamIds: ["p1", "p2"] });
+  });
+
+  it("uses manually supplied request config for model calls", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"speech\":\"Approve.\",\"action\":{\"type\":\"vote\",\"approve\":true}}" } }]
+      }), { status: 200 })
+    );
+
+    const result = await createAiActionResult({
+      body: {
+        state: createVotingState(),
+        playerId: "p2",
+        actionKind: "vote",
+        legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
+        reasoningEffort: "high",
+        model: "model-body",
+        aiConfig: {
+          baseURL: "https://manual.example/v1/",
+          apiKey: "manual-key"
+        }
+      },
+      fetchImpl
+    });
+
+    expect(result).toMatchObject({ source: "model", action: { type: "vote", approve: true } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0][0]).toBe("https://manual.example/v1/chat/completions");
+    expect(fetchImpl.mock.calls[0][1].headers.Authorization).toBe("Bearer manual-key");
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe("model-body");
   });
 
   it("calls the model and returns a validated model action when config is usable", async () => {
@@ -35,7 +64,7 @@ describe("AI endpoint orchestration", () => {
 
     const result = await createAiActionResult({
       body: {
-        state,
+        state: createVotingState(),
         playerId: "p2",
         actionKind: "vote",
         legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
@@ -48,10 +77,11 @@ describe("AI endpoint orchestration", () => {
     expect(result).toMatchObject({ source: "model", action: { type: "vote", approve: true } });
     expect(result.promptMetrics).toMatchObject({ messageCount: 2, totalChars: expect.any(Number) });
     expect(result.apiUsage).toEqual({ promptTokens: 211, completionTokens: 19, totalTokens: 230, cachedPromptTokens: 64 });
+    expect(result.apiTiming).toMatchObject({ attempts: 1, durationMs: expect.any(Number) });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("caps reasoning effort for short and bounded action kinds before prompting and transport", async () => {
+  it("passes the selected reasoning effort through while keeping quest cards local", async () => {
     const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
     const fetchImpl = vi
       .fn()
@@ -63,17 +93,18 @@ describe("AI endpoint orchestration", () => {
       );
     let questState = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
     questState = proposeTeam(questState, "p1", ["p1", "p4"]);
+    questState = finishDiscussion(questState);
     for (const player of questState.players) {
       questState = castVote(questState, player.id, true);
     }
 
     await createAiActionResult({
       body: {
-        state,
+        state: createVotingState(),
         playerId: "p2",
         actionKind: "vote",
         legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
-        reasoningEffort: "high"
+        reasoningEffort: "xhigh"
       },
       config,
       fetchImpl
@@ -84,7 +115,7 @@ describe("AI endpoint orchestration", () => {
         playerId: "p4",
         actionKind: "quest",
         legalActions: [{ type: "quest", card: "success" }, { type: "quest", card: "fail" }],
-        reasoningEffort: "high"
+        reasoningEffort: "xhigh"
       },
       config,
       fetchImpl
@@ -109,7 +140,7 @@ describe("AI endpoint orchestration", () => {
           { type: "assassinate", targetId: "p2" },
           { type: "assassinate", targetId: "p3" }
         ],
-        reasoningEffort: "high"
+        reasoningEffort: "xhigh"
       },
       config,
       fetchImpl
@@ -120,9 +151,11 @@ describe("AI endpoint orchestration", () => {
     expect(voteBody.reasoning_effort).toBe("medium");
     expect(voteBody.messages[1].content).toContain("A=v R=m:");
     expect(questResult).toMatchObject({ source: "local", action: { type: "quest", card: "fail" } });
-    expect(effectiveReasoningEffortForAction("quest", "high")).toBe("low");
-    expect(assassinateBody.reasoning_effort).toBe("medium");
-    expect(assassinateBody.messages[1].content).toContain("A=as R=m:");
+    expect(effectiveReasoningEffortForAction("vote", "xhigh")).toBe("medium");
+    expect(effectiveReasoningEffortForAction("speak", "high")).toBe("medium");
+    expect(effectiveReasoningEffortForAction("quest", "xhigh")).toBe("low");
+    expect(assassinateBody.reasoning_effort).toBe("xhigh");
+    expect(assassinateBody.messages[1].content).toContain("A=as R=x:");
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
@@ -130,7 +163,8 @@ describe("AI endpoint orchestration", () => {
     const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
     const fetchImpl = vi.fn();
     let questState = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
-    questState = proposeTeam(questState, "p1", ["p1", "p2"]);
+    questState = proposeTeam(questState, "p1", ["p1", "p4"]);
+    questState = finishDiscussion(questState);
     for (const player of questState.players) {
       questState = castVote(questState, player.id, true);
     }
@@ -166,27 +200,51 @@ describe("AI endpoint orchestration", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("hard-blocks action kinds that are illegal for the current state before prompting", async () => {
+    const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
+    const fetchImpl = vi.fn();
+
+    const result = await createAiActionResult({
+      body: {
+        state,
+        playerId: "p1",
+        actionKind: "speak",
+        legalActions: [{ type: "speak" }],
+        reasoningEffort: "medium"
+      },
+      config,
+      fetchImpl
+    });
+
+    expect(result).toMatchObject({
+      source: "fallback",
+      fallbackReason: "illegal-action",
+      fallbackDetail: "illegal-action"
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("reports illegal model actions as fallback diagnostics", async () => {
     const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
     const fetchImpl = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify({ choices: [{ message: { content: "{\"speech\":\"Approve.\",\"action\":{\"type\":\"vote\",\"approve\":true}}" } }] }), {
+      new Response(JSON.stringify({ choices: [{ message: { content: "{\"speech\":\"I propose this.\",\"action\":{\"type\":\"proposeTeam\",\"teamIds\":[\"p1\",\"p2\"]}}" } }] }), {
         status: 200
       })
     );
 
     const result = await createAiActionResult({
       body: {
-        state,
+        state: createVotingState(),
         playerId: "p2",
         actionKind: "vote",
-        legalActions: [{ type: "vote", approve: false }],
+        legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
         reasoningEffort: "high"
       },
       config,
       fetchImpl
     });
 
-    expect(result).toMatchObject({ source: "fallback", fallbackReason: "illegal-action", action: { type: "vote", approve: false } });
+    expect(result).toMatchObject({ source: "fallback", fallbackReason: "illegal-action", action: { type: "vote", approve: true } });
   });
 
   it("can include raw model content for manual trace diagnostics", async () => {
@@ -198,7 +256,7 @@ describe("AI endpoint orchestration", () => {
 
     const result = await createAiActionResult({
       body: {
-        state,
+        state: createVotingState(),
         playerId: "p2",
         actionKind: "vote",
         legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
@@ -218,11 +276,13 @@ describe("AI endpoint orchestration", () => {
 
   it("reports API failures as fallback diagnostics", async () => {
     const config: OpenAICompatibleConfig = { baseURL: "https://example.test/v1", apiKey: "key", model: "model-a", timeoutMs: 1000 };
-    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), { status: 500 }));
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), { status: 500 })
+    ));
 
     const result = await createAiActionResult({
       body: {
-        state,
+        state: createVotingState(),
         playerId: "p2",
         actionKind: "vote",
         legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
@@ -232,7 +292,13 @@ describe("AI endpoint orchestration", () => {
       fetchImpl
     });
 
-    expect(result).toMatchObject({ source: "fallback", fallbackReason: "api-http-error" });
+    expect(result).toMatchObject({
+      source: "fallback",
+      fallbackReason: "api-http-error",
+      fallbackDiagnostic: expect.stringContaining("500"),
+      apiTiming: { attempts: 3, durationMs: expect.any(Number) }
+    });
+    expect(result.fallbackDiagnostic).toContain("upstream unavailable");
   });
 
   it("preserves classified API fallback diagnostics", async () => {
@@ -241,7 +307,7 @@ describe("AI endpoint orchestration", () => {
 
     const result = await createAiActionResult({
       body: {
-        state,
+        state: createVotingState(),
         playerId: "p2",
         actionKind: "vote",
         legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
@@ -254,3 +320,18 @@ describe("AI endpoint orchestration", () => {
     expect(result).toMatchObject({ source: "fallback", fallbackReason: "api-invalid-response" });
   });
 });
+
+function finishDiscussion(state: ReturnType<typeof createInitialGame>) {
+  let next = state;
+  while (next.phase === "discussion") {
+    const speaker = next.players[next.discussion?.nextSpeakerIndex ?? 0];
+    next = advanceDiscussionTurn(next, speaker.id);
+  }
+  return next;
+}
+
+function createVotingState() {
+  let next = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
+  next = proposeTeam(next, "p1", ["p1", "p2"]);
+  return finishDiscussion(next);
+}

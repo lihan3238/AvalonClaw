@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && npm run build:client && npm run build:server",
+    "build:client": "vite build",
+    "build:server": "vite build --ssr server/prodServer.ts --outDir dist-server",
+    "prod:start": "node dist-server/prodServer.js",
     "preview": "vite preview --host 127.0.0.1",
     "test": "vitest",
     "test:run": "vitest --run"

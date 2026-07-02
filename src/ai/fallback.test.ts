@@ -1,4 +1,4 @@
-import { createInitialGame, proposeTeam, castVote } from "../game/rules";
+import { advanceDiscussionTurn, createInitialGame, proposeTeam, castVote } from "../game/rules";
 import { chooseFallbackDecision } from "./fallback";
 
 describe("AI fallback decisions", () => {
@@ -12,6 +12,7 @@ describe("AI fallback decisions", () => {
   it("never lets a good player fail a quest", () => {
     let state = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
     state = proposeTeam(state, "p1", ["p1", "p4"]);
+    state = finishDiscussion(state);
     for (const player of state.players) {
       state = castVote(state, player.id, true);
     }
@@ -98,6 +99,7 @@ describe("AI fallback decisions", () => {
       leaderIndex: 2
     });
     state = proposeTeam(state, "p3", ["p3", "p1"]);
+    state = finishDiscussion(state);
 
     expect(chooseFallbackDecision(state, "p3", "vote").action).toEqual({ type: "vote", approve: false });
   });
@@ -109,6 +111,7 @@ describe("AI fallback decisions", () => {
       questIndex: 3
     });
     state = proposeTeam(state, "p1", ["p1", "p2", "p3", "p5"]);
+    state = finishDiscussion(state);
     for (const player of state.players) {
       state = castVote(state, player.id, true);
     }
@@ -116,3 +119,12 @@ describe("AI fallback decisions", () => {
     expect(chooseFallbackDecision(state, "p5", "quest").action).toEqual({ type: "quest", card: "success" });
   });
 });
+
+function finishDiscussion(state: ReturnType<typeof createInitialGame>) {
+  let next = state;
+  while (next.phase === "discussion") {
+    const speaker = next.players[next.discussion?.nextSpeakerIndex ?? 0];
+    next = advanceDiscussionTurn(next, speaker.id);
+  }
+  return next;
+}

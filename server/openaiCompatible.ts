@@ -1,4 +1,4 @@
-import type { AiApiUsage, AiFallbackReason, ReasoningEffort, ChatMessage } from "../src/ai/types";
+import type { AiApiTiming, AiApiUsage, AiFallbackReason, ReasoningEffort, ChatMessage } from "../src/ai/types";
 import type { OpenAICompatibleConfig } from "./env";
 
 interface CallOpenAIInput {
@@ -27,13 +27,18 @@ interface ChatCompletionResponse {
   };
 }
 
+const TRANSIENT_HTTP_ATTEMPTS = 3;
+
 export interface OpenAICompatibleResult {
   content: string;
   usage?: AiApiUsage;
+  timing: AiApiTiming;
 }
 
 export class OpenAICompatibleError extends Error {
   fallbackReason: AiFallbackReason;
+  attempts?: number;
+  durationMs?: number;
 
   constructor(message: string, fallbackReason: AiFallbackReason) {
     super(message);
@@ -51,25 +56,59 @@ export async function callOpenAICompatible(input: CallOpenAIInput): Promise<stri
 }
 
 export async function callOpenAICompatibleWithUsage(input: CallOpenAIInput): Promise<OpenAICompatibleResult> {
+  const startedAt = Date.now();
+  let attempts = 0;
   const fetchImpl = input.fetchImpl ?? fetch;
-  const firstPayload = buildChatCompletionPayload(input.config.model, input.messages, input.reasoningEffort);
-  const first = await postChatCompletion(input.config, firstPayload, fetchImpl);
+  const postWithBudget = async (payload: Record<string, unknown>) => {
+    const remainingAttempts = TRANSIENT_HTTP_ATTEMPTS - attempts;
+    if (remainingAttempts <= 0) {
+      throw new OpenAICompatibleError("OpenAI-compatible retry budget exhausted", "api-http-error");
+    }
+    try {
+      const result = await postChatCompletionWithRetries(input.config, payload, fetchImpl, remainingAttempts);
+      attempts += result.attempts;
+      return result;
+    } catch (error) {
+      if (error instanceof OpenAICompatibleError) {
+        attempts += error.attempts ?? 0;
+      }
+      throw error;
+    }
+  };
 
-  if (!first.ok && shouldRetryWithoutReasoning(first.status, first.text)) {
-    const retryPayload = buildChatCompletionPayload(input.config.model, input.messages);
-    const retry = await postChatCompletion(input.config, retryPayload, fetchImpl);
-    if (!retry.ok) {
-      throw new OpenAICompatibleError(`OpenAI-compatible request failed (${retry.status}): ${retry.text}`, "api-http-error");
+  try {
+    const firstPayload = buildChatCompletionPayload(input.config.model, input.messages, input.reasoningEffort);
+    const first = await postWithBudget(firstPayload);
+
+    if (!first.ok && shouldRetryWithoutReasoning(first.status, first.text)) {
+      const retryPayload = buildChatCompletionPayload(input.config.model, input.messages);
+      const retry = await postWithBudget(retryPayload);
+      if (!retry.ok) {
+        throw withOpenAITiming(
+          new OpenAICompatibleError(`OpenAI-compatible request failed (${retry.status}): ${retry.text}`, "api-http-error"),
+          startedAt,
+          attempts
+        );
+      }
+
+      return withResultTiming(parseChatCompletionResult(retry.text), startedAt, attempts);
     }
 
-    return parseChatCompletionResult(retry.text);
-  }
+    if (!first.ok) {
+      throw withOpenAITiming(
+        new OpenAICompatibleError(`OpenAI-compatible request failed (${first.status}): ${first.text}`, "api-http-error"),
+        startedAt,
+        attempts
+      );
+    }
 
-  if (!first.ok) {
-    throw new OpenAICompatibleError(`OpenAI-compatible request failed (${first.status}): ${first.text}`, "api-http-error");
+    return withResultTiming(parseChatCompletionResult(first.text), startedAt, attempts);
+  } catch (error) {
+    if (error instanceof OpenAICompatibleError) {
+      throw withOpenAITiming(error, startedAt, error.attempts ?? attempts);
+    }
+    throw error;
   }
-
-  return parseChatCompletionResult(first.text);
 }
 
 export function buildChatCompletionPayload(model: string, messages: ChatMessage[], reasoningEffort?: ReasoningEffort): Record<string, unknown> {
@@ -80,6 +119,43 @@ export function buildChatCompletionPayload(model: string, messages: ChatMessage[
     response_format: { type: "json_object" },
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {})
   };
+}
+
+async function postChatCompletionWithRetries(
+  config: OpenAICompatibleConfig,
+  payload: Record<string, unknown>,
+  fetchImpl: typeof fetch,
+  maxAttempts = TRANSIENT_HTTP_ATTEMPTS
+): Promise<{ ok: boolean; status: number; text: string; attempts: number }> {
+  let latest: { ok: boolean; status: number; text: string } | null = null;
+  let latestError: OpenAICompatibleError | null = null;
+  let attempts = 0;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    attempts = attempt;
+    try {
+      latest = await postChatCompletion(config, payload, fetchImpl);
+    } catch (error) {
+      if (error instanceof OpenAICompatibleError && isTransientTransportError(error) && attempt < maxAttempts) {
+        latestError = error;
+        await sleep(transientHttpRetryDelayMs(attempt));
+        continue;
+      }
+      if (error instanceof OpenAICompatibleError) {
+        error.attempts = attempts;
+      }
+      throw error;
+    }
+    if (latest.ok || !isTransientHttpStatus(latest.status) || attempt === maxAttempts) {
+      return { ...latest, attempts };
+    }
+    await sleep(transientHttpRetryDelayMs(attempt));
+  }
+  if (latestError) {
+    latestError.attempts = attempts;
+    throw latestError;
+  }
+  latest = latest ?? await postChatCompletion(config, payload, fetchImpl);
+  return { ...latest, attempts: Math.max(attempts, 1) };
 }
 
 async function postChatCompletion(
@@ -125,6 +201,22 @@ function shouldRetryWithoutReasoning(status: number, body: string): boolean {
   return status >= 400 && status < 500 && /reasoning[_\s-]*effort|unrecognized|unknown parameter|unsupported/i.test(body);
 }
 
+function isTransientHttpStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
+
+function isTransientTransportError(error: OpenAICompatibleError): boolean {
+  return error.fallbackReason === "api-timeout" || error.fallbackReason === "api-error";
+}
+
+function transientHttpRetryDelayMs(attempt: number): number {
+  return Math.min(100 * 2 ** (attempt - 1), 1000);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function parseChatCompletionContent(body: string): string {
   return parseChatCompletionResult(body).content;
 }
@@ -144,8 +236,29 @@ function parseChatCompletionResult(body: string): OpenAICompatibleResult {
   const usage = normalizeUsage(parsed.usage);
   return {
     content,
-    ...(usage ? { usage } : {})
+    ...(usage ? { usage } : {}),
+    timing: { durationMs: 0, attempts: 0 }
   };
+}
+
+function withResultTiming(result: OpenAICompatibleResult, startedAt: number, attempts: number): OpenAICompatibleResult {
+  return {
+    ...result,
+    timing: {
+      durationMs: elapsedMs(startedAt),
+      attempts
+    }
+  };
+}
+
+function withOpenAITiming(error: OpenAICompatibleError, startedAt: number, attempts: number): OpenAICompatibleError {
+  error.durationMs = error.durationMs ?? elapsedMs(startedAt);
+  error.attempts = error.attempts ?? attempts;
+  return error;
+}
+
+function elapsedMs(startedAt: number): number {
+  return Math.max(0, Date.now() - startedAt);
 }
 
 function normalizeUsage(usage: ChatCompletionResponse["usage"]): AiApiUsage | undefined {

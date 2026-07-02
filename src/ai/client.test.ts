@@ -2,6 +2,8 @@ import { vi } from "vitest";
 import { createInitialGame } from "../game/rules";
 import { requestAiAction } from "./client";
 
+const aiConfig = { baseURL: "https://example.test/v1", apiKey: "key" };
+
 describe("AI browser client validation", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -26,7 +28,8 @@ describe("AI browser client validation", () => {
       legalActions: [{ type: "proposeTeam", teamIds: ["p1", "p2"] }],
       reasoningEffort: "low",
       language: "en",
-      model: "model-a"
+      model: "model-a",
+      aiConfig
     });
 
     expect(result).toEqual({
@@ -57,7 +60,8 @@ describe("AI browser client validation", () => {
       legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
       reasoningEffort: "low",
       language: "en",
-      model: "model-a"
+      model: "model-a",
+      aiConfig
     });
 
     expect(result).toEqual({
@@ -86,7 +90,8 @@ describe("AI browser client validation", () => {
       legalActions: [{ type: "quest", card: "success" }],
       reasoningEffort: "low",
       language: "en",
-      model: "model-a"
+      model: "model-a",
+      aiConfig
     });
 
     expect(result).toEqual({
@@ -116,7 +121,8 @@ describe("AI browser client validation", () => {
       legalActions: [{ type: "vote", approve: true }, { type: "vote", approve: false }],
       reasoningEffort: "low",
       language: "en",
-      model: "model-a"
+      model: "model-a",
+      aiConfig
     });
 
     expect(result).toEqual({
@@ -142,7 +148,8 @@ describe("AI browser client validation", () => {
       legalActions: [{ type: "proposeTeam", teamIds: ["p1", "p2"] }],
       reasoningEffort: "low",
       language: "en",
-      model: "model-a"
+      model: "model-a",
+      aiConfig
     });
 
     expect(result).toEqual({

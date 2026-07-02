@@ -1,12 +1,13 @@
-import { Crown, History, LogIn, MessageCircle, RotateCcw, ScrollText, Send, Shield, Sparkles, Swords, Users, Vote } from "lucide-react";
+import { Crown, History, KeyRound, LogIn, MessageCircle, RotateCcw, ScrollText, Send, Shield, Sparkles, Swords, Users, Vote } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { requestAiAction } from "./ai/client";
-import type { AiActionKind, AiDecisionResult, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./ai/types";
+import type { AiActionKind, AiDecisionResult, AiRuntimeConfig, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./ai/types";
 import { getLegalActionsForPlayer } from "./game/legalActions";
 import {
   assassinateMerlin,
   castVote,
   createInitialGame,
+  advanceDiscussionTurn,
   getFailedQuestCount,
   getDefaultRoles,
   getQuestConfig,
@@ -16,14 +17,19 @@ import {
   ROLE_DEFINITIONS,
   submitQuestCard
 } from "./game/rules";
-import { createSessionId, listSessions, loadSession, saveSession, type SavedLogEntry, type SavedSession } from "./game/sessionStore";
-import type { GameState, Player, QuestCard } from "./game/types";
+import { createSessionId, isRestorableSession, listSessions, loadSession, saveSession, type SavedLogEntry, type SavedSession } from "./game/sessionStore";
+import type { GameState, Player, QuestCard, Role } from "./game/types";
 
 type LogEntry = SavedLogEntry;
 type Theme = "dark" | "light";
 type PublicLogEvent = Pick<LogEntry, "text" | "tone">;
 
 const THEME_STORAGE_KEY = "avalon-claw:theme";
+const AI_CONFIG_STORAGE_KEY = "avalon-claw:ai-config";
+const DEFAULT_AI_CONFIG: AiRuntimeConfig = {
+  baseURL: "https://api.openai.com/v1",
+  apiKey: ""
+};
 
 const copy = {
   en: {
@@ -40,6 +46,10 @@ const copy = {
     low: "Low",
     medium: "Medium",
     high: "High",
+    xhigh: "XHigh",
+    aiEndpoint: "AI endpoint",
+    baseUrl: "Base URL",
+    apiKey: "API key",
     model: "Model",
     darkMode: "Dark mode",
     tableConfig: "Table config",
@@ -51,7 +61,13 @@ const copy = {
     restoreGame: "Restore game",
     restore: "Restore",
     restoreMissing: "No saved game found for that ID.",
-    noSavedGames: "No saved games yet.",
+    restoreEnded: "That game is already over. Open the full list to review it.",
+    noSavedGames: "No unfinished saved games yet.",
+    fullList: "Full list",
+    fullSavedGames: "All saved games",
+    close: "Close",
+    view: "View",
+    ended: "ended",
     start: "Start game",
     reset: "Reset",
     yourRole: "Your Role",
@@ -61,7 +77,7 @@ const copy = {
     sendTalk: "Send speech",
     publicTalk: "Table Talk",
     leaderMarker: "Leader",
-    countdown: "Phase countdown",
+    countdown: "countdown",
     seconds: "s",
     thinkingNow: "thinking",
     voteSubmittedStatus: "Votes submitted",
@@ -122,6 +138,10 @@ const copy = {
     low: "低",
     medium: "中",
     high: "高",
+    xhigh: "极高",
+    aiEndpoint: "AI 接口",
+    baseUrl: "Base URL",
+    apiKey: "API key",
     model: "模型",
     darkMode: "黑夜模式",
     tableConfig: "局配置",
@@ -133,7 +153,13 @@ const copy = {
     restoreGame: "恢复对局",
     restore: "恢复",
     restoreMissing: "没有找到这个局号对应的存档。",
-    noSavedGames: "暂无已保存对局。",
+    restoreEnded: "这局已经终局；可在完整列表里查看复盘。",
+    noSavedGames: "暂无可恢复的未终局对局。",
+    fullList: "完整列表",
+    fullSavedGames: "完整存档",
+    close: "关闭",
+    view: "查看",
+    ended: "已终局",
     start: "开始游戏",
     reset: "重置",
     yourRole: "你的身份",
@@ -143,7 +169,7 @@ const copy = {
     sendTalk: "发送发言",
     publicTalk: "牌桌发言",
     leaderMarker: "队长",
-    countdown: "流程倒计时",
+    countdown: "倒计时",
     seconds: "秒",
     thinkingNow: "思考中",
     voteSubmittedStatus: "投票已提交",
@@ -195,17 +221,42 @@ const copy = {
 const phaseLabels = {
   en: {
     proposal: "Team proposal",
+    discussion: "Ordered discussion",
     voting: "Approval vote",
     quest: "Quest resolution",
     assassination: "Assassination"
   },
   zh: {
     proposal: "组队提案",
+    discussion: "顺序发言",
     voting: "队伍投票",
     quest: "任务结算",
     assassination: "刺杀梅林"
   }
 } satisfies Record<TableLanguage, Record<Exclude<GameState["phase"], "gameOver">, string>>;
+
+const roleLabels = {
+  en: {
+    merlin: "Merlin",
+    percival: "Percival",
+    loyal: "Loyal Servant",
+    assassin: "Assassin",
+    morgana: "Morgana",
+    mordred: "Mordred",
+    oberon: "Oberon",
+    minion: "Minion of Mordred"
+  },
+  zh: {
+    merlin: "梅林",
+    percival: "派西维尔",
+    loyal: "忠臣",
+    assassin: "刺客",
+    morgana: "莫甘娜",
+    mordred: "莫德雷德",
+    oberon: "奥伯伦",
+    minion: "邪恶爪牙"
+  }
+} satisfies Record<TableLanguage, Record<Role, string>>;
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme());
@@ -214,13 +265,15 @@ export default function App() {
   const [language, setLanguage] = useState<TableLanguage>("zh");
   const [reasoningEffort, setReasoningEffort] = useState<ReasoningEffort>("medium");
   const [model, setModel] = useState("gpt-5.4-mini");
+  const [aiConfig, setAiConfig] = useState<AiRuntimeConfig>(() => readStoredAiConfig());
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [savedSessions, setSavedSessions] = useState<SavedSession[]>(() => listSessions());
+  const [showAllSessions, setShowAllSessions] = useState(false);
   const [restoreId, setRestoreId] = useState("");
   const [restoreError, setRestoreError] = useState("");
   const [game, setGame] = useState<GameState | null>(null);
   const [selectedTeam, setSelectedTeam] = useState<string[]>([]);
-  const [pendingAi, setPendingAi] = useState<string | null>(null);
+  const [pendingAi, setPendingAi] = useState<string[]>([]);
   const [log, setLog] = useState<LogEntry[]>([]);
   const [tableTalk, setTableTalk] = useState<PublicTalkEntry[]>([]);
   const [talkInput, setTalkInput] = useState("");
@@ -228,6 +281,7 @@ export default function App() {
   const [phaseDeadline, setPhaseDeadline] = useState(() => Date.now() + 60_000);
   const sessionIdRef = useRef<string | null>(null);
   const gameRef = useRef<GameState | null>(null);
+  const activeAiKeysRef = useRef<Set<string>>(new Set());
 
   sessionIdRef.current = sessionId;
   gameRef.current = game;
@@ -239,12 +293,29 @@ export default function App() {
   const currentHumanAction = game && human ? getHumanAction(game, human.id) : null;
   const phaseKey = game ? getPhaseKey(game) : "setup";
   const countdownSeconds = game && game.phase !== "gameOver" ? Math.max(0, Math.ceil((phaseDeadline - clockNow) / 1000)) : null;
-  const pendingAiPlayer = game && pendingAi ? getPendingAiPlayer(game, pendingAi) : null;
+  const pendingAiPlayers = game ? getPendingAiPlayers(game, pendingAi) : [];
+  const pendingAiPlayerIds = new Set(pendingAiPlayers.map((player) => player.id));
   const highlightedTeam = game?.phase === "proposal" && leader?.isHuman ? selectedTeam : game?.proposal?.teamIds ?? [];
+  const currentDiscussionSpeaker = game?.phase === "discussion" && game.discussion ? game.players[game.discussion.nextSpeakerIndex] : null;
+  const canHumanTalk = Boolean(
+    game
+    && human
+    && (
+      game.phase === "gameOver"
+      || (game.phase === "discussion" && currentHumanAction === "speak")
+      || (game.phase === "assassination" && human.allegiance === "evil")
+    )
+  );
+  const talkDisabled = Boolean(game && human && !canHumanTalk);
+  const restorableSessions = useMemo(() => savedSessions.filter(isRestorableSession), [savedSessions]);
 
   useEffect(() => {
     persistTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    persistAiConfig(aiConfig);
+  }, [aiConfig]);
 
   useEffect(() => {
     const now = Date.now();
@@ -281,48 +352,63 @@ export default function App() {
   }, [game, selectedTeam, log, tableTalk, language, reasoningEffort, model, sessionId]);
 
   useEffect(() => {
-    if (!game || !sessionId || pendingAi || game.phase === "gameOver") {
+    if (!game || !sessionId || game.phase === "gameOver") {
       return;
     }
 
-    const next = getNextAiAction(game);
-    if (!next) {
+    const nextActions = getNextAiActions(game)
+      .map((action) => ({ ...action, key: buildAiRequestKey(game, action, sessionId) }))
+      .filter((action) => !activeAiKeysRef.current.has(action.key));
+    if (!nextActions.length) {
       return;
     }
 
-    const key = `${next.playerId}:${next.actionKind}:${game.phase}:${Object.keys(game.votes).length}:${Object.keys(game.questCards).length}`;
     const requestSessionId = sessionId;
-    setPendingAi(key);
-    const legalActions = getLegalActionsForPlayer(game, next.playerId, next.actionKind);
-    void requestAiAction({ state: game, playerId: next.playerId, actionKind: next.actionKind, legalActions, tableTalk, reasoningEffort, language, model }).then((decision) => {
-      if (sessionIdRef.current !== requestSessionId) {
-        return;
-      }
-      const current = gameRef.current;
-      if (!current || current.phase === "gameOver") {
-        setPendingAi((active) => active === key ? null : active);
-        return;
-      }
+    for (const action of nextActions) {
+      activeAiKeysRef.current.add(action.key);
+    }
+    setPendingAi(Array.from(activeAiKeysRef.current));
+
+    for (const next of nextActions) {
+      let legalActions: LegalAction[];
       try {
-        const nextGame = applyDecision(current, next.playerId, decision.action);
-        if (decision.source === "fallback") {
-          appendLog(fallbackLogText(playerName(current, next.playerId), decision, language), "warning");
-        }
-        appendTableTalk(
-          next.playerId,
-          playerName(current, next.playerId),
-          decision.source === "fallback" ? `${decision.speech} (${copy[language].fallback})` : decision.speech
-        );
-        for (const entry of describePublicActionEvents(current, nextGame, next.playerId, decision.action, language)) {
-          appendLog(entry.text, entry.tone);
-        }
-        setGame(nextGame);
+        legalActions = getLegalActionsForPlayer(game, next.playerId, next.actionKind);
       } catch {
-        // Ignore illegal/stale AI actions; fallback prompting will retry from the current state.
+        finishPendingAi(next.key);
+        continue;
       }
-      setPendingAi((current) => current === key ? null : current);
-    });
-  }, [game, sessionId, pendingAi, tableTalk, reasoningEffort, language, model]);
+
+      void requestAiAction({ sessionId, state: game, playerId: next.playerId, actionKind: next.actionKind, legalActions, tableTalk, reasoningEffort, language, model, aiConfig }).then((decision) => {
+        if (sessionIdRef.current !== requestSessionId) {
+          return;
+        }
+        const current = gameRef.current;
+        if (!current || current.phase === "gameOver") {
+          return;
+        }
+        try {
+          const nextGame = applyDecision(current, next.playerId, decision.action);
+          if (decision.source === "fallback") {
+            appendLog(fallbackLogText(playerName(current, next.playerId), decision, language), "warning");
+          }
+          if (decision.action.type === "speak") {
+            appendTableTalk(
+              next.playerId,
+              playerName(current, next.playerId),
+              decision.source === "fallback" ? `${decision.speech} (${copy[language].fallback})` : decision.speech
+            );
+          }
+          for (const entry of describePublicActionEvents(current, nextGame, next.playerId, decision.action, language)) {
+            appendLog(entry.text, entry.tone);
+          }
+          gameRef.current = nextGame;
+          setGame(nextGame);
+        } catch {
+          // Ignore illegal/stale AI actions; fallback prompting will retry from the current state.
+        }
+      }).finally(() => finishPendingAi(next.key));
+    }
+  }, [game, sessionId, pendingAi, tableTalk, reasoningEffort, language, model, aiConfig]);
 
   function startGame() {
     const resolvedHumanSeat = humanSeat === "random" ? Math.floor(Math.random() * playerCount) : humanSeat;
@@ -341,13 +427,14 @@ export default function App() {
     setSelectedTeam([newGame.players[newGame.leaderIndex].id]);
     setRestoreError("");
     setRestoreId("");
+    setShowAllSessions(false);
     setTableTalk([]);
     setTalkInput("");
     setLog([
       {
         id: Date.now(),
         tone: "system",
-        text: `${copy[language].started}. ${copy[language].yourRole}: ${ROLE_DEFINITIONS[newGame.players[resolvedHumanSeat].role].label}.`
+        text: `${copy[language].started}. ${copy[language].yourRole}: ${roleLabel(newGame.players[resolvedHumanSeat].role, language)}.`
       }
     ]);
   }
@@ -356,18 +443,23 @@ export default function App() {
     setSessionId(null);
     setGame(null);
     setSelectedTeam([]);
-    setPendingAi(null);
+    clearPendingAi();
     setLog([]);
     setTableTalk([]);
     setTalkInput("");
     setRestoreError("");
+    setShowAllSessions(false);
     setSavedSessions(listSessions());
   }
 
-  function restoreGameById(id = restoreId) {
+  function restoreGameById(id = restoreId, allowTerminalView = false) {
     const saved = loadSession(id);
     if (!saved) {
       setRestoreError(copy[language].restoreMissing);
+      return;
+    }
+    if (!allowTerminalView && !isRestorableSession(saved)) {
+      setRestoreError(copy[language].restoreEnded);
       return;
     }
 
@@ -382,9 +474,10 @@ export default function App() {
     setLog(saved.log);
     setTableTalk(saved.tableTalk ?? []);
     setTalkInput("");
-    setPendingAi(null);
+    clearPendingAi();
     setRestoreId(saved.id);
     setRestoreError("");
+    setShowAllSessions(false);
     setSavedSessions(listSessions());
   }
 
@@ -400,6 +493,16 @@ export default function App() {
     setTableTalk((entries) => [...entries, { id: Date.now() + Math.random(), speakerId, speakerName, text: trimmed }].slice(-120));
   }
 
+  function finishPendingAi(key: string) {
+    activeAiKeysRef.current.delete(key);
+    setPendingAi(Array.from(activeAiKeysRef.current));
+  }
+
+  function clearPendingAi() {
+    activeAiKeysRef.current.clear();
+    setPendingAi([]);
+  }
+
   function submitHumanTalk() {
     if (!game || !human) {
       return;
@@ -408,7 +511,21 @@ export default function App() {
     if (!text) {
       return;
     }
+    const canSubmitTalk = game.phase === "gameOver"
+      || (game.phase === "discussion" && currentHumanAction === "speak")
+      || (game.phase === "assassination" && human.allegiance === "evil");
+    if (!canSubmitTalk) {
+      return;
+    }
     appendTableTalk(human.id, human.name, text);
+    if (game.phase === "discussion" && currentHumanAction === "speak") {
+      const action: LegalAction = { type: "speak" };
+      const nextGame = advanceDiscussionTurn(game, human.id);
+      setGame(nextGame);
+      for (const entry of describePublicActionEvents(game, nextGame, human.id, action, language)) {
+        appendLog(entry.text, entry.tone);
+      }
+    }
     setTalkInput("");
   }
 
@@ -478,18 +595,20 @@ export default function App() {
     if (!game || !human || !humanKnowledge) {
       return null;
     }
-    const knownEvil = humanKnowledge.knownEvilIds.length
-      ? humanKnowledge.knownEvilIds.map((id) => describeKnownPlayer(game, id, knownEvilLabel(human, language)))
-      : [copy[language].none];
-    const merlinCandidates = humanKnowledge.merlinCandidateIds.length
-      ? humanKnowledge.merlinCandidateIds.map((id) => describeKnownPlayer(game, id, language === "zh" ? "Merlin/Morgana 候选" : "Merlin/Morgana candidate"))
-      : [copy[language].none];
-    return [
-      `${copy[language].knownEvil}:`,
-      ...knownEvil,
-      `${copy[language].merlinCandidates}:`,
-      ...merlinCandidates
-    ];
+    const lines: string[] = [];
+    if (human.role === "merlin" || human.allegiance === "evil" && human.role !== "oberon") {
+      const knownEvil = humanKnowledge.knownEvilIds.length
+        ? humanKnowledge.knownEvilIds.map((id) => describeKnownPlayer(game, id, knownEvilLabel(human, language)))
+        : [copy[language].none];
+      lines.push(`${copy[language].knownEvil}:`, ...knownEvil);
+    }
+    if (human.role === "percival") {
+      const merlinCandidates = humanKnowledge.merlinCandidateIds.length
+        ? humanKnowledge.merlinCandidateIds.map((id) => describeKnownPlayer(game, id, language === "zh" ? "梅林/莫甘娜候选" : "Merlin/Morgana candidate"))
+        : [copy[language].none];
+      lines.push(`${copy[language].merlinCandidates}:`, ...merlinCandidates);
+    }
+    return lines.length ? lines : [copy[language].none];
   }, [game, human, humanKnowledge, language]);
 
   return (
@@ -534,8 +653,33 @@ export default function App() {
               <option value="low">{copy[language].low}</option>
               <option value="medium">{copy[language].medium}</option>
               <option value="high">{copy[language].high}</option>
+              <option value="xhigh">{copy[language].xhigh}</option>
             </select>
           </label>
+          <form className="config-panel ai-config-panel" onSubmit={(event) => event.preventDefault()}>
+            <div className="config-title"><KeyRound size={15} /> {copy[language].aiEndpoint}</div>
+            <label>
+              <span>{copy[language].baseUrl}</span>
+              <input
+                type="url"
+                value={aiConfig.baseURL}
+                onChange={(event) => setAiConfig((current) => ({ ...current, baseURL: event.target.value }))}
+                placeholder="https://api.openai.com/v1"
+                spellCheck={false}
+              />
+            </label>
+            <label>
+              <span>{copy[language].apiKey}</span>
+              <input
+                type="password"
+                value={aiConfig.apiKey}
+                onChange={(event) => setAiConfig((current) => ({ ...current, apiKey: event.target.value }))}
+                placeholder="sk-..."
+                autoComplete="off"
+                spellCheck={false}
+              />
+            </label>
+          </form>
           <label>
             <span>{copy[language].model}</span>
             <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="OPENAI_MODEL" />
@@ -548,6 +692,10 @@ export default function App() {
               onChange={(event) => setTheme(event.target.checked ? "dark" : "light")}
             />
           </label>
+          <div className="button-row">
+            <button className="primary" onClick={startGame} disabled={Boolean(game)}><Send size={16} /> {copy[language].start}</button>
+            <button className="secondary icon-text" onClick={restartGame}><RotateCcw size={16} /> {copy[language].reset}</button>
+          </div>
           <ConfigPanel playerCount={playerCount} language={language} labels={copy[language]} />
           {sessionId && (
             <div className="session-current">
@@ -564,9 +712,10 @@ export default function App() {
               </label>
               <button type="button" className="secondary icon-text" onClick={() => restoreGameById()}><LogIn size={16} /> {copy[language].restoreGame}</button>
               {restoreError && <p className="restore-error">{restoreError}</p>}
-              {savedSessions.length ? (
+              <button type="button" className="secondary icon-text" onClick={() => setShowAllSessions(true)}><History size={16} /> {copy[language].fullList}</button>
+              {restorableSessions.length ? (
                 <div className="saved-session-list">
-                  {savedSessions.map((session) => (
+                  {restorableSessions.map((session) => (
                     <div className="saved-session" key={session.id}>
                       <button type="button" className="session-id-button" onClick={() => restoreGameById(session.id)}>{session.id}</button>
                       <span>{formatSessionSummary(session, language)}</span>
@@ -577,18 +726,23 @@ export default function App() {
               ) : (
                 <p className="muted-text">{copy[language].noSavedGames}</p>
               )}
+              {showAllSessions && (
+                <SavedSessionsDialog
+                  sessions={savedSessions}
+                  language={language}
+                  labels={copy[language]}
+                  onClose={() => setShowAllSessions(false)}
+                  onOpen={(session) => restoreGameById(session.id, true)}
+                />
+              )}
             </div>
           )}
-          <div className="button-row">
-            <button className="primary" onClick={startGame} disabled={Boolean(game)}><Send size={16} /> {copy[language].start}</button>
-            <button className="secondary icon-text" onClick={restartGame}><RotateCcw size={16} /> {copy[language].reset}</button>
-          </div>
         </div>
 
         {game && human && (
           <div className={`panel role-panel ${human.allegiance}`}>
             <div className="panel-title"><Shield size={16} /> {copy[language].yourRole}</div>
-            <h2>{ROLE_DEFINITIONS[human.role].label}</h2>
+            <h2>{roleLabel(human.role, language)}</h2>
             <span className="allegiance">{human.allegiance.toUpperCase()}</span>
             <div className="role-detail">
               <strong>{copy[language].roleSkill}</strong>
@@ -613,7 +767,7 @@ export default function App() {
             <span>{copy[language].fail} {getFailedQuestCount(game)}</span>
             <span>{copy[language].reject} {game.failedVotes}/5</span>
             {game.questResults.length > 0 && <span>{formatLatestQuestResult(game, language)}</span>}
-            {countdownSeconds !== null && <span>{copy[language].countdown} {countdownSeconds}{copy[language].seconds}</span>}
+            {countdownSeconds !== null && <span>{formatPhaseCountdown(game, countdownSeconds, language)}</span>}
           </div>}
         </header>
 
@@ -623,22 +777,30 @@ export default function App() {
             <div className="table-card">
               <div className="table-center">
                 <div className="leader-chip"><Crown size={16} /> {copy[language].leader}: {leader?.name}</div>
-                <div className={`phase-chip ${pendingAi ? "thinking" : ""}`}>
-                  {pendingAiPlayer ? `${pendingAiPlayer.name} ${copy[language].thinkingNow}` : currentHumanAction ? copy[language].yourDecision : copy[language].resolving}
+                <div className={`phase-chip ${pendingAiPlayers.length ? "thinking" : ""}`}>
+                  {pendingAiPlayers.length ? formatPendingAiStatus(pendingAiPlayers, language) : currentHumanAction ? copy[language].yourDecision : copy[language].resolving}
                 </div>
               </div>
               <div className="players-grid">
-                {game.players.map((player) => (
-                  <button
-                    type="button"
-                    key={player.id}
-                    className={`player-seat ${player.isHuman ? "human" : ""} ${leader?.id === player.id ? "leader" : ""} ${highlightedTeam.includes(player.id) ? "selected" : ""} ${playerToneClass(player)}`}
-                    onClick={() => game.phase === "proposal" && leader?.isHuman ? toggleTeam(player.id) : undefined}
-                  >
-                    <span><b>{player.id}</b> {player.name} {leader?.id === player.id && <em>{copy[language].leaderMarker}</em>}</span>
-                    <small>{visibleRole(game, player, human, language)}</small>
-                  </button>
-                ))}
+                {game.players.map((player) => {
+                  const isThinking = pendingAiPlayerIds.has(player.id);
+                  const isSpeaking = currentDiscussionSpeaker?.id === player.id;
+                  return (
+                    <button
+                      type="button"
+                      key={player.id}
+                      className={`player-seat ${player.isHuman ? "human" : ""} ${leader?.id === player.id ? "leader" : ""} ${highlightedTeam.includes(player.id) ? "selected" : ""} ${isThinking ? "thinking" : ""} ${isSpeaking ? "speaking" : ""} ${playerToneClass(player)}`}
+                      onClick={() => game.phase === "proposal" && leader?.isHuman ? toggleTeam(player.id) : undefined}
+                    >
+                      <span>
+                        <b>{player.id}</b> {player.name}
+                        {leader?.id === player.id && <em>{copy[language].leaderMarker}</em>}
+                        {isThinking && <em className="thinking-badge">{copy[language].thinkingNow}</em>}
+                      </span>
+                      <small>{visibleRole(game, player, human, language)}</small>
+                    </button>
+                  );
+                })}
               </div>
             </div>
             <DecisionPanel
@@ -669,8 +831,8 @@ export default function App() {
           {game && human && (
             <label className="talk-input">
               <span>{copy[language].speak}</span>
-              <textarea value={talkInput} onChange={(event) => setTalkInput(event.target.value)} rows={3} />
-              <button type="button" className="primary" onClick={submitHumanTalk} disabled={!talkInput.trim()}><Send size={16} /> {copy[language].sendTalk}</button>
+              <textarea value={talkInput} onChange={(event) => setTalkInput(event.target.value)} rows={3} disabled={talkDisabled} />
+              <button type="button" className="primary" onClick={submitHumanTalk} disabled={!talkInput.trim() || talkDisabled}><Send size={16} /> {copy[language].sendTalk}</button>
             </label>
           )}
           <div className="talk-list">
@@ -707,7 +869,7 @@ function ConfigPanel({ playerCount, language, labels }: { playerCount: number; l
       <div className="config-title"><Users size={15} /> {labels.tableConfig}</div>
       <div className="config-block">
         <strong>{labels.rolesInGame}</strong>
-        <span>{roles.map((role) => ROLE_DEFINITIONS[role.role].label).join(" · ")}</span>
+        <span>{roles.map((role) => roleLabel(role.role, language)).join(" · ")}</span>
         <small>{goodCount} {goodLabel} / {evilCount} {evilLabel}</small>
       </div>
       <div className="config-block">
@@ -717,6 +879,43 @@ function ConfigPanel({ playerCount, language, labels }: { playerCount: number; l
             <span key={index}>Q{index + 1} {quest.teamSize}{people} {quest.failsRequired}{failCard}</span>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function SavedSessionsDialog(props: {
+  sessions: SavedSession[];
+  language: TableLanguage;
+  labels: typeof copy.en;
+  onClose: () => void;
+  onOpen: (session: SavedSession) => void;
+}) {
+  return (
+    <div className="dialog-backdrop">
+      <div className="saved-dialog" role="dialog" aria-modal="true" aria-label={props.labels.fullSavedGames}>
+        <div className="dialog-header">
+          <strong>{props.labels.fullSavedGames}</strong>
+          <button type="button" className="secondary small-button" onClick={props.onClose}>{props.labels.close}</button>
+        </div>
+        {props.sessions.length ? (
+          <div className="saved-session-list full">
+            {props.sessions.map((session) => {
+              const restorable = isRestorableSession(session);
+              return (
+                <div className={`saved-session ${restorable ? "" : "ended"}`} key={session.id}>
+                  <span className="session-id-text">{session.id}</span>
+                  <span>{formatSessionSummary(session, props.language)}</span>
+                  <button type="button" className="secondary small-button" onClick={() => props.onOpen(session)}>
+                    {restorable ? <LogIn size={14} /> : <ScrollText size={14} />} {restorable ? props.labels.restore : props.labels.view}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="muted-text">{props.labels.noSavedGames}</p>
+        )}
       </div>
     </div>
   );
@@ -743,6 +942,14 @@ function DecisionPanel(props: {
         <strong>{props.labels.selectPlayers}: {props.questTeamSize}</strong>
         <span>{props.selectedTeam.join(", ") || props.labels.noTeam}</span>
         <button className="primary" disabled={props.selectedTeam.length !== props.questTeamSize} onClick={props.onProposal}><Send size={16} /> {props.labels.proposeTeam}</button>
+      </div>
+    );
+  }
+  if (props.currentAction === "speak") {
+    return (
+      <div className="decision-panel">
+        <strong>{props.labels.speak}</strong>
+        <span>{props.game.proposal?.teamIds.join(", ")}</span>
       </div>
     );
   }
@@ -823,6 +1030,9 @@ function getHumanAction(game: GameState, humanId: string): AiActionKind | null {
   if (game.phase === "proposal" && game.players[game.leaderIndex].id === humanId) {
     return "proposeTeam";
   }
+  if (game.phase === "discussion" && game.discussion && game.players[game.discussion.nextSpeakerIndex]?.id === humanId) {
+    return "speak";
+  }
   if (game.phase === "voting" && !game.votes[humanId]) {
     return "vote";
   }
@@ -836,30 +1046,39 @@ function getHumanAction(game: GameState, humanId: string): AiActionKind | null {
   return null;
 }
 
-function getNextAiAction(game: GameState): { playerId: string; actionKind: AiActionKind } | null {
+function getNextAiActions(game: GameState): { playerId: string; actionKind: AiActionKind }[] {
   if (game.phase === "proposal") {
     const leader = game.players[game.leaderIndex];
-    return leader.isHuman ? null : { playerId: leader.id, actionKind: "proposeTeam" };
+    return leader.isHuman ? [] : [{ playerId: leader.id, actionKind: "proposeTeam" }];
+  }
+  if (game.phase === "discussion" && game.discussion) {
+    const speaker = game.players[game.discussion.nextSpeakerIndex];
+    return speaker && !speaker.isHuman ? [{ playerId: speaker.id, actionKind: "speak" }] : [];
   }
   if (game.phase === "voting") {
-    const voter = game.players.find((player) => !player.isHuman && !game.votes[player.id]);
-    return voter ? { playerId: voter.id, actionKind: "vote" } : null;
+    return game.players
+      .filter((player) => !player.isHuman && !game.votes[player.id])
+      .map((player) => ({ playerId: player.id, actionKind: "vote" as const }));
   }
   if (game.phase === "quest") {
-    const quester = game.players.find((player) => !player.isHuman && game.proposal?.teamIds.includes(player.id) && !game.questCards[player.id]);
-    return quester ? { playerId: quester.id, actionKind: "quest" } : null;
+    return game.players
+      .filter((player) => !player.isHuman && game.proposal?.teamIds.includes(player.id) && !game.questCards[player.id])
+      .map((player) => ({ playerId: player.id, actionKind: "quest" as const }));
   }
   if (game.phase === "assassination") {
     const assassin = game.players.find((player) => player.role === "assassin");
-    return assassin && !assassin.isHuman ? { playerId: assassin.id, actionKind: "assassinate" } : null;
+    return assassin && !assassin.isHuman ? [{ playerId: assassin.id, actionKind: "assassinate" }] : [];
   }
 
-  return null;
+  return [];
 }
 
 function applyDecision(game: GameState, playerId: string, action: LegalAction): GameState {
   if (action.type === "proposeTeam") {
     return proposeTeam(game, playerId, action.teamIds);
+  }
+  if (action.type === "speak") {
+    return advanceDiscussionTurn(game, playerId);
   }
   if (action.type === "vote") {
     return castVote(game, playerId, action.approve);
@@ -880,6 +1099,18 @@ function phaseTitle(game: GameState | null, language: TableLanguage): string {
   return phaseLabels[language][game.phase];
 }
 
+function formatPhaseCountdown(game: GameState, seconds: number, language: TableLanguage): string {
+  if (game.phase === "gameOver") {
+    return "";
+  }
+  const separator = language === "zh" ? "" : " ";
+  return `${phaseLabels[language][game.phase]}${separator}${copy[language].countdown} ${seconds}${copy[language].seconds}`;
+}
+
+function roleLabel(role: Role, language: TableLanguage): string {
+  return roleLabels[language][role];
+}
+
 function formatLatestQuestResult(game: GameState, language: TableLanguage): string {
   const latest = game.questResults[game.questResults.length - 1];
   const separator = language === "zh" ? "：" : ": ";
@@ -888,7 +1119,7 @@ function formatLatestQuestResult(game: GameState, language: TableLanguage): stri
 
 function visibleRole(game: GameState, player: Player, human: Player | undefined, language: TableLanguage): string {
   if (game.phase === "gameOver" || player.id === human?.id) {
-    return ROLE_DEFINITIONS[player.role].label;
+    return roleLabel(player.role, language);
   }
   return player.isHuman ? copy[language].you : copy[language].unknownRole;
 }
@@ -896,25 +1127,25 @@ function visibleRole(game: GameState, player: Player, human: Player | undefined,
 function roleSkillText(player: Player, language: TableLanguage): string {
   if (language === "zh") {
     if (player.role === "merlin") {
-      return "你知道除 Mordred 外的邪恶方；需要暗中带好人避开坏人，同时别让 Assassin 看出你是 Merlin。";
+      return "你知道除莫德雷德外的邪恶方；需要暗中带好人避开坏人，同时别让刺客看出你是梅林。";
     }
     if (player.role === "percival") {
-      return "你会看到 Merlin/Morgana 两名候选，但无法区分真假；你的目标是保护真 Merlin。";
+      return "你会看到梅林/莫甘娜候选，但无法区分真假；你的目标是保护真梅林。";
     }
     if (player.role === "assassin") {
-      return "邪恶方成员。若好人完成三次任务，你可以刺杀 Merlin，刺中则邪恶方翻盘。";
+      return "邪恶方成员。若好人完成三次任务，你可以刺杀梅林，刺中则邪恶方翻盘。";
     }
     if (player.role === "morgana") {
-      return "邪恶方成员，并会伪装成 Percival 眼中的 Merlin 候选，扰乱好人判断。";
+      return "邪恶方成员，并会伪装成派西维尔眼中的梅林候选，扰乱好人判断。";
     }
     if (player.role === "mordred") {
-      return "邪恶方成员，并且不会被 Merlin 看见。";
+      return "邪恶方成员，并且不会被梅林看见。";
     }
     if (player.role === "oberon") {
       return "邪恶方成员，但你不知道其他邪恶方，其他邪恶方也不知道你。";
     }
     if (player.role === "minion") {
-      return "邪恶方成员。配合同伴混入队伍、制造失败任务，并帮助 Assassin 找 Merlin。";
+      return "邪恶方成员。配合同伴混入队伍、制造失败任务，并帮助刺客找梅林。";
     }
     return "普通好人。你没有额外私密信息，需要根据发言、投票、队伍和任务结果推理。";
   }
@@ -1019,6 +1250,10 @@ function describePublicActionEvents(previous: GameState, next: GameState, player
     return [{ text: `${actor} ${labels.proposed}: ${action.teamIds.join(", ")}.`, tone: "ai" }];
   }
 
+  if (action.type === "speak") {
+    return [];
+  }
+
   if (action.type === "vote") {
     const votes = { ...previous.votes, [playerId]: action.approve ? "approve" as const : "reject" as const };
     if (Object.keys(votes).length < previous.players.length) {
@@ -1063,13 +1298,37 @@ function getPhaseKey(game: GameState): string {
     game.failedVotes,
     game.leaderIndex,
     game.proposal?.leaderId ?? "",
-    game.proposal?.teamIds.join(",") ?? ""
+    game.proposal?.teamIds.join(",") ?? "",
+    game.discussion?.nextSpeakerIndex ?? "",
+    game.discussion?.spokenIds.join(",") ?? ""
   ].join(":");
 }
 
-function getPendingAiPlayer(game: GameState, pendingAi: string): Player | null {
-  const [playerId] = pendingAi.split(":");
-  return game.players.find((player) => player.id === playerId) ?? null;
+function buildAiRequestKey(game: GameState, action: { playerId: string; actionKind: AiActionKind }, sessionId: string): string {
+  return [
+    action.playerId,
+    action.actionKind,
+    sessionId,
+    game.phase,
+    game.questIndex,
+    game.failedVotes,
+    game.leaderIndex,
+    game.proposal?.leaderId ?? "",
+    game.proposal?.teamIds.join(",") ?? "",
+    game.discussion?.nextSpeakerIndex ?? ""
+  ].join(":");
+}
+
+function getPendingAiPlayers(game: GameState, pendingAi: string[]): Player[] {
+  const ids = new Set(pendingAi.map((key) => key.split(":")[0]).filter(Boolean));
+  return game.players.filter((player) => ids.has(player.id));
+}
+
+function formatPendingAiStatus(players: Player[], language: TableLanguage): string {
+  if (players.length === 1) {
+    return `${players[0].name} ${copy[language].thinkingNow}`;
+  }
+  return language === "zh" ? `${players.length} 位 AI ${copy[language].thinkingNow}` : `${players.length} AI ${copy[language].thinkingNow}`;
 }
 
 function readStoredTheme(): Theme {
@@ -1090,6 +1349,30 @@ function persistTheme(theme: Theme): void {
   if (typeof document !== "undefined") {
     document.documentElement.dataset.theme = theme;
     document.body.dataset.theme = theme;
+  }
+}
+
+function readStoredAiConfig(): AiRuntimeConfig {
+  try {
+    const raw = localStorage.getItem(AI_CONFIG_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_AI_CONFIG;
+    }
+    const parsed = JSON.parse(raw) as Partial<AiRuntimeConfig>;
+    return {
+      baseURL: typeof parsed.baseURL === "string" ? parsed.baseURL : DEFAULT_AI_CONFIG.baseURL,
+      apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : DEFAULT_AI_CONFIG.apiKey
+    };
+  } catch {
+    return DEFAULT_AI_CONFIG;
+  }
+}
+
+function persistAiConfig(config: AiRuntimeConfig): void {
+  try {
+    localStorage.setItem(AI_CONFIG_STORAGE_KEY, JSON.stringify(config));
+  } catch {
+    // AI config persistence is optional; users can still enter it for the current page.
   }
 }
 

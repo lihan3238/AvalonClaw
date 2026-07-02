@@ -16,12 +16,12 @@ Version 1 supports 5-10 players, one local human, AI seats for all other players
 
 - `src/game/*` contains a deterministic rule engine and pure helpers. It owns roles, visibility, legal actions, transitions, and win conditions.
 - `src/ai/*` contains shared AI action types, prompt construction, response parsing, and fallback strategy.
-- `server/*` contains local-only OpenAI-compatible API integration and Vite dev API endpoints. It reads `.env`, never exposes secrets to the client, and retries without unsupported reasoning parameters.
+- `server/*` contains OpenAI-compatible API integration and Vite dev API endpoints. It receives user-entered runtime provider config from the browser request and retries without unsupported reasoning parameters.
 - `src/components/*` and `src/App.tsx` render the playable table, controls, history, role panel, and settings.
 
 ## Data Flow
 
-The browser holds current game state in React. When an AI seat must act, the browser sends sanitized game state, action type, player id, model, and reasoning effort to `/api/ai-action`. The server rebuilds the AI prompt with private knowledge for that player, calls the configured OpenAI-compatible endpoint, validates JSON, and returns a legal action or a fallback action. The browser applies the action through the rule engine.
+The browser holds current game state in React. When an AI seat must act, the browser sends sanitized game state, action type, player id, model, reasoning effort, and the manually entered `baseURL`/`apiKey` to `/api/ai-action`. The server rebuilds the AI prompt with private knowledge for that player, calls the configured OpenAI-compatible endpoint, validates JSON, and returns a legal action or a fallback action. The browser applies the action through the rule engine.
 
 ## AI Player Design
 
@@ -38,7 +38,7 @@ The prompt separates:
 
 ## Error Handling
 
-- Missing API config: use heuristic fallback and show an API status badge.
+- Missing runtime API config: use heuristic fallback and show an API status badge.
 - Network/API error: retry once without `reasoning_effort`, then fallback.
 - Invalid JSON: extract the first JSON object if possible, validate, then fallback.
 - Illegal action: replace with fallback legal action and log the correction.

@@ -23,6 +23,13 @@ export function chooseFallbackDecision(state: GameState, playerId: string, actio
     };
   }
 
+  if (actionKind === "speak") {
+    return {
+      speech: language === "zh" ? "我先看队伍和前面发言的矛盾点。" : "I am weighing the proposal against the public reads so far.",
+      action: { type: "speak" }
+    };
+  }
+
   if (actionKind === "vote") {
     const team = state.proposal?.teamIds ?? [];
     const knowledge = getRoleKnowledge(state, playerId);

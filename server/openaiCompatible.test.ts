@@ -9,6 +9,10 @@ describe("OpenAI-compatible transport", () => {
     timeoutMs: 1000
   };
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("joins base URL and chat completions path safely", () => {
     expect(joinOpenAIPath("https://example.test/v1/", "/chat/completions")).toBe("https://example.test/v1/chat/completions");
   });
@@ -40,6 +44,29 @@ describe("OpenAI-compatible transport", () => {
     expect(secondBody.reasoning_effort).toBeUndefined();
   });
 
+  it("counts reasoning_effort compatibility fallback against the total retry budget", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: { message: "Unrecognized request argument supplied: reasoning_effort" } }), { status: 400 })
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "temporary upstream unavailable" } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "temporary upstream unavailable" } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"late ok\",\"a\":{\"t\":\"v\",\"ok\":1}}" } }] }), { status: 200 }));
+
+    await expect(callOpenAICompatible({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "high",
+      fetchImpl
+    })).rejects.toMatchObject({ fallbackReason: "api-http-error", attempts: 3 });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(fetchImpl.mock.calls[0][1].body).reasoning_effort).toBe("high");
+    expect(JSON.parse(fetchImpl.mock.calls[1][1].body).reasoning_effort).toBeUndefined();
+    expect(JSON.parse(fetchImpl.mock.calls[2][1].body).reasoning_effort).toBeUndefined();
+  });
+
   it("returns provider token usage diagnostics when present", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
@@ -54,12 +81,14 @@ describe("OpenAI-compatible transport", () => {
       }), { status: 200 })
     );
 
-    await expect(callOpenAICompatibleWithUsage({
+    const result = await callOpenAICompatibleWithUsage({
       config,
       messages: [{ role: "user", content: "Return JSON" }],
       reasoningEffort: "medium",
       fetchImpl
-    })).resolves.toEqual({
+    });
+
+    expect(result).toMatchObject({
       content: "{\"s\":\"Approve.\",\"a\":{\"t\":\"v\",\"ok\":1}}",
       usage: {
         promptTokens: 321,
@@ -67,12 +96,35 @@ describe("OpenAI-compatible transport", () => {
         totalTokens: 339,
         cachedPromptTokens: 128,
         reasoningTokens: 7
-      }
+      },
+      timing: { attempts: 1, durationMs: expect.any(Number) }
     });
   });
 
+  it("records duration for successful slow requests instead of only failed attempts", async () => {
+    vi.spyOn(Date, "now")
+      .mockReturnValueOnce(10_000)
+      .mockReturnValueOnce(12_345);
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        choices: [{ message: { content: "{\"s\":\"Approve.\",\"a\":{\"t\":\"v\",\"ok\":1}}" } }]
+      }), { status: 200 })
+    );
+
+    const result = await callOpenAICompatibleWithUsage({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "medium",
+      fetchImpl
+    });
+
+    expect(result.timing).toEqual({ attempts: 1, durationMs: 2345 });
+  });
+
   it("classifies HTTP failures for endpoint diagnostics", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), { status: 503 }));
+    const fetchImpl = vi.fn().mockImplementation(() => Promise.resolve(
+      new Response(JSON.stringify({ error: { message: "upstream unavailable" } }), { status: 503 })
+    ));
 
     await expect(callOpenAICompatible({
       config,
@@ -80,6 +132,65 @@ describe("OpenAI-compatible transport", () => {
       reasoningEffort: "low",
       fetchImpl
     })).rejects.toMatchObject({ fallbackReason: "api-http-error" });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries transient HTTP failures before falling back", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "temporary upstream unavailable" } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"ok\",\"a\":{\"t\":\"v\",\"ok\":1}}" } }] }), { status: 200 }));
+
+    await expect(callOpenAICompatible({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "low",
+      fetchImpl
+    })).resolves.toContain("\"ok\"");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+
+    await expect(callOpenAICompatibleWithUsage({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "low",
+      fetchImpl: vi
+        .fn()
+        .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "temporary upstream unavailable" } }), { status: 503 }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"ok\",\"a\":{\"t\":\"v\",\"ok\":1}}" } }] }), { status: 200 }))
+    })).resolves.toMatchObject({ timing: { attempts: 2, durationMs: expect.any(Number) } });
+  });
+
+  it("falls back after the initial transient HTTP attempt plus two retries", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "temporary upstream unavailable" } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "temporary upstream unavailable" } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { message: "temporary upstream unavailable" } }), { status: 503 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"ok\",\"a\":{\"t\":\"v\",\"ok\":1}}" } }] }), { status: 200 }));
+
+    await expect(callOpenAICompatible({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "low",
+      fetchImpl
+    })).rejects.toMatchObject({ fallbackReason: "api-http-error" });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it("retries transient transport timeouts before falling back", async () => {
+    const timeoutError = new DOMException("This operation was aborted", "AbortError");
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(timeoutError)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ choices: [{ message: { content: "{\"s\":\"ok\",\"a\":{\"t\":\"v\",\"ok\":1}}" } }] }), { status: 200 }));
+
+    await expect(callOpenAICompatible({
+      config,
+      messages: [{ role: "user", content: "Return JSON" }],
+      reasoningEffort: "low",
+      fetchImpl
+    })).resolves.toContain("\"ok\"");
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
   it("classifies empty and invalid provider response payloads", async () => {

@@ -1,7 +1,7 @@
 import type { QuestCard } from "../game/types";
 
-export type AiActionKind = "proposeTeam" | "vote" | "quest" | "assassinate";
-export type ReasoningEffort = "low" | "medium" | "high";
+export type AiActionKind = "proposeTeam" | "speak" | "vote" | "quest" | "assassinate";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type TableLanguage = "en" | "zh";
 
 export interface ChatMessage {
@@ -24,6 +24,16 @@ export interface AiApiUsage {
   reasoningTokens?: number;
 }
 
+export interface AiApiTiming {
+  durationMs: number;
+  attempts: number;
+}
+
+export interface AiRuntimeConfig {
+  baseURL: string;
+  apiKey: string;
+}
+
 export interface Persona {
   caution: number;
   aggression: number;
@@ -41,6 +51,7 @@ export interface PublicTalkEntry {
 
 export type LegalAction =
   | { type: "proposeTeam"; teamIds: string[] }
+  | { type: "speak" }
   | { type: "vote"; approve: boolean }
   | { type: "quest"; card: QuestCard }
   | { type: "assassinate"; targetId: string };
@@ -70,10 +81,11 @@ export type AiFallbackDetail =
 
 export type AiSpeechRepairReason =
   | "missing-speech"
+  | "nested-speech"
+  | "forced-legal-action"
   | "unsafe-role-word"
+  | "secret-intent-leak"
   | "schema-echo"
-  | "low-information"
-  | "action-mismatch"
   | "overlong-speech"
   | "quest-card-speech";
 
@@ -81,8 +93,10 @@ export interface AiDecisionResult extends AiDecision {
   source: "model" | "fallback" | "local";
   fallbackReason?: AiFallbackReason;
   fallbackDetail?: AiFallbackDetail;
+  fallbackDiagnostic?: string;
   speechRepairReason?: AiSpeechRepairReason;
   rawModelContent?: string;
   promptMetrics?: AiPromptMetrics;
   apiUsage?: AiApiUsage;
+  apiTiming?: AiApiTiming;
 }

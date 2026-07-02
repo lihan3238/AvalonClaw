@@ -2,10 +2,11 @@ import dotenv from "dotenv";
 import { describe, expect, it } from "vitest";
 import { createAiActionResult, effectiveReasoningEffortForAction } from "./aiEndpoint";
 import { hasUsableOpenAIConfig, readOpenAIConfigFromEnv } from "./env";
-import { appendRealApiResultJsonl, summarizeRealApiTrace, type RealApiTraceModelTier } from "./realApiTrace";
+import { appendRealApiResultJsonl, auditRealApiGame, summarizeRealApiTrace, type RealApiTraceModelTier } from "./realApiTrace";
 import { getLegalActionsForPlayer } from "../src/game/legalActions";
 import {
   assassinateMerlin,
+  advanceDiscussionTurn,
   castVote,
   createInitialGame,
   getFailedQuestCount,
@@ -13,7 +14,7 @@ import {
   proposeTeam,
   submitQuestCard
 } from "../src/game/rules";
-import type { AiActionKind, AiApiUsage, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiPromptMetrics, AiSpeechRepairReason, LegalAction, ReasoningEffort, TableLanguage } from "../src/ai/types";
+import type { AiActionKind, AiApiTiming, AiApiUsage, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiPromptMetrics, AiSpeechRepairReason, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "../src/ai/types";
 import type { GameState } from "../src/game/types";
 
 dotenv.config();
@@ -34,16 +35,26 @@ interface TraceEntry {
   source: AiDecisionResult["source"];
   fallbackReason?: AiFallbackReason;
   fallbackDetail?: AiFallbackDetail;
+  fallbackDiagnostic?: string;
   speechRepairReason?: AiSpeechRepairReason;
   promptMetrics?: AiPromptMetrics;
   apiUsage?: AiApiUsage;
+  apiTiming?: AiApiTiming;
   rawModelContent?: string;
   modelTier: ModelTier;
   action: LegalAction;
   speech: string;
 }
 
-type RealApiScenario = "uniform" | "all-strong" | "all-weak" | "random" | "strong-human-vs-weak-ai" | "weak-human-vs-strong-ai";
+type RealApiScenario =
+  | "uniform"
+  | "all-strong"
+  | "all-weak"
+  | "random"
+  | "strong-human-vs-weak-ai"
+  | "weak-human-vs-strong-ai"
+  | "strong-good-vs-weak-evil"
+  | "weak-good-vs-strong-evil";
 type ModelTier = RealApiTraceModelTier;
 
 interface ScenarioConfig {
@@ -102,8 +113,9 @@ maybeDescribe("manual real API full-game smoke", () => {
           role: player.role,
           allegiance: player.allegiance,
           isSimulatedUser: player.id === simulatedUser.id,
-          ...modelProfileForPlayer(scenario, scenarioConfig, simulatedUser.id, player.id, seed)
+          ...modelProfileForPlayer(scenario, scenarioConfig, simulatedUser.id, player.id, seed, player.allegiance)
         }));
+        const audit = auditRealApiGame({ modelAssignments, trace: result.trace });
         const report = {
           scenario,
           game: gameIndex + 1,
@@ -128,6 +140,7 @@ maybeDescribe("manual real API full-game smoke", () => {
           localActions: diagnostics.localActions,
           fallbackCount,
           diagnostics,
+          audit,
           trace: includeTrace ? result.trace : undefined
         };
         process.stdout.write(`\nAVALON_REAL_API_RESULT ${JSON.stringify(report)}\n`);
@@ -137,6 +150,55 @@ maybeDescribe("manual real API full-game smoke", () => {
       }
     }
   }, realApiTimeoutMs);
+});
+
+describe("manual real API scenario routing", () => {
+  const scenarioConfig: ScenarioConfig = {
+    strongModel: "strong-model",
+    weakModel: "weak-model",
+    uniformModel: "uniform-model",
+    strongReasoningEffort: "medium",
+    weakReasoningEffort: "low",
+    uniformReasoningEffort: "low"
+  };
+
+  it("supports model-strength scenarios split by Good and Evil allegiance", () => {
+    expect(isRealApiScenario("strong-good-vs-weak-evil")).toBe(true);
+    expect(isRealApiScenario("weak-good-vs-strong-evil")).toBe(true);
+
+    expect(modelProfileForPlayer("strong-good-vs-weak-evil" as RealApiScenario, scenarioConfig, "p1", "p2", 7, "good")).toEqual({
+      model: "strong-model",
+      reasoningEffort: "medium",
+      modelTier: "strong"
+    });
+    expect(modelProfileForPlayer("strong-good-vs-weak-evil" as RealApiScenario, scenarioConfig, "p1", "p4", 7, "evil")).toEqual({
+      model: "weak-model",
+      reasoningEffort: "low",
+      modelTier: "weak"
+    });
+    expect(modelProfileForPlayer("weak-good-vs-strong-evil" as RealApiScenario, scenarioConfig, "p1", "p2", 7, "good")).toEqual({
+      model: "weak-model",
+      reasoningEffort: "low",
+      modelTier: "weak"
+    });
+    expect(modelProfileForPlayer("weak-good-vs-strong-evil" as RealApiScenario, scenarioConfig, "p1", "p4", 7, "evil")).toEqual({
+      model: "strong-model",
+      reasoningEffort: "medium",
+      modelTier: "strong"
+    });
+  });
+});
+
+describe("manual real API table talk context", () => {
+  it("records previous AI speeches as table talk for later prompts", () => {
+    const first = appendTraceTableTalk([], { step: 3, playerId: "p1", speech: "先看 p2 的站边。" }, "AI 1");
+    const second = appendTraceTableTalk(first, { step: 4, playerId: "p2", speech: "我反对这队。" }, "AI 2");
+
+    expect(second).toEqual([
+      { id: 3, speakerId: "p1", speakerName: "AI 1", text: "先看 p2 的站边。" },
+      { id: 4, speakerId: "p2", speakerName: "AI 2", text: "我反对这队。" }
+    ]);
+  });
 });
 
 async function playRealApiGame(input: {
@@ -156,6 +218,7 @@ async function playRealApiGame(input: {
     seed: input.seed
   });
   const trace: TraceEntry[] = [];
+  let tableTalk: PublicTalkEntry[] = [];
 
   for (let step = 0; step < input.maxSteps; step += 1) {
     if (state.phase === "gameOver") {
@@ -163,7 +226,8 @@ async function playRealApiGame(input: {
     }
 
     const next = getNextAutoplayAction(state);
-    const playerProfile = modelProfileForPlayer(input.scenario, input.scenarioConfig, state.players[input.humanSeat].id, next.playerId, input.seed);
+    const player = state.players.find((candidate) => candidate.id === next.playerId);
+    const playerProfile = modelProfileForPlayer(input.scenario, input.scenarioConfig, state.players[input.humanSeat].id, next.playerId, input.seed, player?.allegiance);
     const reasoningEffort = effectiveReasoningEffortForAction(next.actionKind, playerProfile.reasoningEffort);
     const legalActions = getLegalActionsForPlayer(state, next.playerId, next.actionKind);
     const decision = await createAiActionResult({
@@ -172,6 +236,7 @@ async function playRealApiGame(input: {
         playerId: next.playerId,
         actionKind: next.actionKind,
         legalActions,
+        tableTalk,
         reasoningEffort: playerProfile.reasoningEffort,
         language: input.language,
         model: playerProfile.model
@@ -192,9 +257,11 @@ async function playRealApiGame(input: {
       source: decision.source,
       fallbackReason: decision.fallbackReason,
       fallbackDetail: decision.fallbackDetail,
+      fallbackDiagnostic: decision.fallbackDiagnostic,
       speechRepairReason: decision.speechRepairReason,
       promptMetrics: decision.promptMetrics,
       apiUsage: decision.apiUsage,
+      apiTiming: decision.apiTiming,
       rawModelContent: input.includeRawModelContent ? decision.rawModelContent : undefined,
       action: decision.action,
       speech: decision.speech
@@ -203,6 +270,7 @@ async function playRealApiGame(input: {
     if (input.streamSteps) {
       process.stdout.write(`\nAVALON_REAL_API_STEP ${JSON.stringify(traceEntry)}\n`);
     }
+    tableTalk = appendTraceTableTalk(tableTalk, traceEntry, player?.name ?? next.playerId);
     state = applyLegalAction(state, next.playerId, decision.action);
   }
 
@@ -212,6 +280,10 @@ async function playRealApiGame(input: {
 function getNextAutoplayAction(state: GameState): { playerId: string; actionKind: AiActionKind } {
   if (state.phase === "proposal") {
     return { playerId: state.players[state.leaderIndex].id, actionKind: "proposeTeam" };
+  }
+  if (state.phase === "discussion" && state.discussion) {
+    const speaker = state.players[state.discussion.nextSpeakerIndex];
+    return { playerId: speaker.id, actionKind: "speak" };
   }
   if (state.phase === "voting") {
     const voter = state.players.find((player) => !state.votes[player.id]);
@@ -239,6 +311,9 @@ function applyLegalAction(state: GameState, playerId: string, action: LegalActio
   if (action.type === "proposeTeam") {
     return proposeTeam(state, playerId, action.teamIds);
   }
+  if (action.type === "speak") {
+    return advanceDiscussionTurn(state, playerId);
+  }
   if (action.type === "vote") {
     return castVote(state, playerId, action.approve);
   }
@@ -248,6 +323,21 @@ function applyLegalAction(state: GameState, playerId: string, action: LegalActio
   return assassinateMerlin(state, playerId, action.targetId);
 }
 
+function appendTraceTableTalk(
+  tableTalk: PublicTalkEntry[],
+  traceEntry: Pick<TraceEntry, "step" | "playerId" | "speech">,
+  speakerName: string
+): PublicTalkEntry[] {
+  const text = traceEntry.speech.trim();
+  if (!text) {
+    return tableTalk;
+  }
+  return [
+    ...tableTalk,
+    { id: traceEntry.step, speakerId: traceEntry.playerId, speakerName, text }
+  ].slice(-120);
+}
+
 function readPositiveInt(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] ?? "", 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
@@ -255,7 +345,7 @@ function readPositiveInt(name: string, fallback: number): number {
 
 function readReasoningEffort(name: string, fallback: ReasoningEffort): ReasoningEffort {
   const value = process.env[name];
-  if (value === "low" || value === "medium" || value === "high") {
+  if (value === "low" || value === "medium" || value === "high" || value === "xhigh") {
     return value;
   }
   return fallback;
@@ -273,7 +363,9 @@ function isRealApiScenario(value: string): value is RealApiScenario {
     || value === "all-weak"
     || value === "random"
     || value === "strong-human-vs-weak-ai"
-    || value === "weak-human-vs-strong-ai";
+    || value === "weak-human-vs-strong-ai"
+    || value === "strong-good-vs-weak-evil"
+    || value === "weak-good-vs-strong-evil";
 }
 
 function readScenarioConfig(defaultModel: string): ScenarioConfig {
@@ -299,7 +391,8 @@ function modelProfileForPlayer(
   config: ScenarioConfig,
   simulatedUserId: string,
   playerId: string,
-  seed: number
+  seed: number,
+  playerAllegiance?: "good" | "evil"
 ): { model: string; reasoningEffort: ReasoningEffort; modelTier: ModelTier } {
   if (scenario === "all-strong") {
     return { model: config.strongModel, reasoningEffort: config.strongReasoningEffort, modelTier: "strong" };
@@ -322,6 +415,16 @@ function modelProfileForPlayer(
       ? { model: config.weakModel, reasoningEffort: config.weakReasoningEffort, modelTier: "weak" }
       : { model: config.strongModel, reasoningEffort: config.strongReasoningEffort, modelTier: "strong" };
   }
+  if (scenario === "strong-good-vs-weak-evil") {
+    return playerAllegiance === "evil"
+      ? { model: config.weakModel, reasoningEffort: config.weakReasoningEffort, modelTier: "weak" }
+      : { model: config.strongModel, reasoningEffort: config.strongReasoningEffort, modelTier: "strong" };
+  }
+  if (scenario === "weak-good-vs-strong-evil") {
+    return playerAllegiance === "evil"
+      ? { model: config.strongModel, reasoningEffort: config.strongReasoningEffort, modelTier: "strong" }
+      : { model: config.weakModel, reasoningEffort: config.weakReasoningEffort, modelTier: "weak" };
+  }
 
   return { model: config.uniformModel, reasoningEffort: config.uniformReasoningEffort, modelTier: "uniform" };
 }
@@ -338,6 +441,12 @@ function scenarioExpectation(scenario: RealApiScenario): string {
   }
   if (scenario === "all-weak") {
     return "all seats use the weak model; expect lower-quality play but full rules compliance";
+  }
+  if (scenario === "strong-good-vs-weak-evil") {
+    return "Good seats use the strong model and Evil seats use the weak model; expect Good-favored strategic pressure with full rules compliance";
+  }
+  if (scenario === "weak-good-vs-strong-evil") {
+    return "Good seats use the weak model and Evil seats use the strong model; expect Evil-favored pressure with full rules compliance";
   }
   if (scenario === "random") {
     return "strong and weak models are assigned per seat by seed for mixed-table robustness";

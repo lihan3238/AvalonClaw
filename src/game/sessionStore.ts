@@ -67,6 +67,19 @@ export function listSessions(): SavedSession[] {
     .map(cloneSession);
 }
 
+export function isRestorableSession(session: SavedSession | null | undefined): session is SavedSession {
+  return Boolean(session && session.game.phase !== "gameOver");
+}
+
+export function loadRestorableSession(id: string): SavedSession | null {
+  const session = loadSession(id);
+  return isRestorableSession(session) ? session : null;
+}
+
+export function listRestorableSessions(): SavedSession[] {
+  return listSessions().filter(isRestorableSession);
+}
+
 function readSessionMap(): SavedSessionMap {
   const storage = getStorage();
   if (!storage) {
@@ -129,7 +142,7 @@ function isSavedSession(value: unknown): value is SavedSession {
     && value.log.every(isSavedLogEntry)
     && (value.tableTalk === undefined || (Array.isArray(value.tableTalk) && value.tableTalk.every(isPublicTalkEntry)))
     && (value.language === "zh" || value.language === "en")
-    && (value.reasoningEffort === "low" || value.reasoningEffort === "medium" || value.reasoningEffort === "high")
+    && (value.reasoningEffort === "low" || value.reasoningEffort === "medium" || value.reasoningEffort === "high" || value.reasoningEffort === "xhigh")
     && typeof value.model === "string"
     && typeof value.updatedAt === "number";
 }
@@ -142,13 +155,31 @@ function isGameState(value: unknown): value is GameState {
   return typeof value.playerCount === "number"
     && Array.isArray(value.players)
     && typeof value.humanSeat === "number"
-    && typeof value.phase === "string"
+    && isGamePhase(value.phase)
     && typeof value.leaderIndex === "number"
     && typeof value.questIndex === "number"
     && typeof value.failedVotes === "number"
+    && (value.discussion === undefined || isDiscussionState(value.discussion))
+    && (value.phase !== "discussion" || value.discussion !== undefined)
     && isRecord(value.votes)
     && isRecord(value.questCards)
     && Array.isArray(value.questResults);
+}
+
+function isGamePhase(value: unknown): value is GameState["phase"] {
+  return value === "proposal"
+    || value === "discussion"
+    || value === "voting"
+    || value === "quest"
+    || value === "assassination"
+    || value === "gameOver";
+}
+
+function isDiscussionState(value: unknown): boolean {
+  return isRecord(value)
+    && typeof value.nextSpeakerIndex === "number"
+    && Array.isArray(value.spokenIds)
+    && value.spokenIds.every((id) => typeof id === "string");
 }
 
 function isSavedLogEntry(value: unknown): value is SavedLogEntry {

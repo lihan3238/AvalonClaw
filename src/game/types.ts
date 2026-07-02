@@ -10,7 +10,7 @@ export type Role =
   | "oberon"
   | "minion";
 
-export type GamePhase = "proposal" | "voting" | "quest" | "assassination" | "gameOver";
+export type GamePhase = "proposal" | "discussion" | "voting" | "quest" | "assassination" | "gameOver";
 
 export type Vote = "approve" | "reject";
 export type QuestCard = "success" | "fail";
@@ -48,6 +48,11 @@ export interface Proposal {
   teamIds: string[];
 }
 
+export interface DiscussionState {
+  nextSpeakerIndex: number;
+  spokenIds: string[];
+}
+
 export interface GameState {
   playerCount: number;
   players: Player[];
@@ -57,6 +62,7 @@ export interface GameState {
   questIndex: number;
   failedVotes: number;
   proposal?: Proposal;
+  discussion?: DiscussionState;
   votes: Record<string, Vote>;
   questCards: Record<string, QuestCard>;
   questResults: QuestResult[];

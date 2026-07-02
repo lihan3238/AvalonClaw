@@ -1,12 +1,14 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { chooseFallbackDecision } from "../src/ai/fallback";
 import { buildAIPrompt, createPersona, measurePromptMessages, parseAiDecision } from "../src/ai/prompt";
-import type { AiActionKind, AiDecisionResult, AiPromptMetrics, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "../src/ai/types";
+import type { AiActionKind, AiApiTiming, AiDecisionResult, AiPromptMetrics, AiRuntimeConfig, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "../src/ai/types";
+import { getLegalActionsForPlayer } from "../src/game/legalActions";
 import type { GameState } from "../src/game/types";
-import { hasUsableOpenAIConfig, readOpenAIConfigFromEnv, type OpenAICompatibleConfig } from "./env";
+import { hasUsableOpenAIConfig, type OpenAICompatibleConfig } from "./env";
 import { callOpenAICompatibleWithUsage, OpenAICompatibleError } from "./openaiCompatible";
 
 export interface AiActionRequestBody {
+  sessionId?: string;
   state: GameState;
   playerId: string;
   actionKind: AiActionKind;
@@ -15,6 +17,7 @@ export interface AiActionRequestBody {
   reasoningEffort: ReasoningEffort;
   language?: TableLanguage;
   model?: string;
+  aiConfig?: AiRuntimeConfig;
 }
 
 interface CreateAiActionInput {
@@ -27,13 +30,23 @@ interface CreateAiActionInput {
 export async function createAiActionResult(input: CreateAiActionInput): Promise<AiDecisionResult> {
   const language = input.body.language ?? "en";
   const fallback = chooseFallbackDecision(input.body.state, input.body.playerId, input.body.actionKind, language);
-  const legalActions = input.body.legalActions.length ? input.body.legalActions : [fallback.action];
+  let legalActions: LegalAction[];
+  try {
+    legalActions = getLegalActionsForPlayer(input.body.state, input.body.playerId, input.body.actionKind);
+  } catch {
+    return {
+      ...fallback,
+      source: "fallback",
+      fallbackReason: "illegal-action",
+      fallbackDetail: "illegal-action"
+    };
+  }
   const localDecision = chooseLocalDecision(input.body.actionKind, legalActions, fallback);
   if (localDecision) {
     return localDecision;
   }
 
-  const config = input.config ?? readOpenAIConfigFromEnv();
+  const config = input.config ?? readOpenAIConfigFromBody(input.body);
   const effectiveConfig = {
     ...config,
     model: input.body.model?.trim() || config.model
@@ -65,18 +78,23 @@ export async function createAiActionResult(input: CreateAiActionInput): Promise<
       fetchImpl: input.fetchImpl
     });
 
-    const decision = parseAiDecision(modelResult.content, legalActions, fallback);
+    const decision = parseAiDecision(modelResult.content, legalActions, fallback, { playerId: input.body.playerId });
     return {
       ...decision,
       promptMetrics,
       ...(modelResult.usage ? { apiUsage: modelResult.usage } : {}),
+      apiTiming: modelResult.timing,
       ...(input.includeRawModelContent ? { rawModelContent: modelResult.content } : {})
     };
   } catch (error) {
+    const fallbackDiagnostic = error instanceof OpenAICompatibleError ? compactDiagnostic(error.message) : undefined;
+    const apiTiming = timingFromOpenAIError(error);
     return {
       ...fallback,
       source: "fallback",
       fallbackReason: error instanceof OpenAICompatibleError ? error.fallbackReason : "api-error",
+      ...(fallbackDiagnostic ? { fallbackDiagnostic } : {}),
+      ...(apiTiming ? { apiTiming } : {}),
       ...(promptMetrics ? { promptMetrics } : {})
     };
   }
@@ -86,10 +104,7 @@ export function effectiveReasoningEffortForAction(actionKind: AiActionKind, requ
   if (actionKind === "quest") {
     return "low";
   }
-  if (actionKind === "vote" && requested === "high") {
-    return "medium";
-  }
-  if (actionKind === "assassinate" && requested === "high") {
+  if ((actionKind === "speak" || actionKind === "vote") && (requested === "high" || requested === "xhigh")) {
     return "medium";
   }
   return requested;
@@ -113,6 +128,49 @@ function chooseLocalDecision(actionKind: AiActionKind, legalActions: LegalAction
   return null;
 }
 
+function compactDiagnostic(message: string): string {
+  return message.replace(/\s+/gu, " ").trim().slice(0, 500);
+}
+
+function timingFromOpenAIError(error: unknown): AiApiTiming | undefined {
+  if (!(error instanceof OpenAICompatibleError)) {
+    return undefined;
+  }
+  if (error.durationMs === undefined && error.attempts === undefined) {
+    return undefined;
+  }
+  return {
+    durationMs: error.durationMs ?? 0,
+    attempts: error.attempts ?? 0
+  };
+}
+
+function readOpenAIConfigFromBody(body: AiActionRequestBody): OpenAICompatibleConfig {
+  return {
+    baseURL: normalizeBaseURL(body.aiConfig?.baseURL),
+    apiKey: normalizeString(body.aiConfig?.apiKey),
+    model: body.model?.trim() || "gpt-5.4-mini",
+    timeoutMs: 45_000
+  };
+}
+
+function normalizeBaseURL(value: unknown): string {
+  const raw = normalizeString(value).replace(/\/+$/u, "");
+  if (!raw) {
+    return "";
+  }
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? raw : "";
+  } catch {
+    return "";
+  }
+}
+
+function normalizeString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
 export async function handleAiActionRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
   if (req.method !== "POST") {
     sendJson(res, 405, { error: "Method not allowed" });
@@ -121,11 +179,33 @@ export async function handleAiActionRequest(req: IncomingMessage, res: ServerRes
 
   try {
     const body = (await readJsonBody(req)) as AiActionRequestBody;
+    const startedAt = Date.now();
     const result = await createAiActionResult({ body });
+    logAiAction(body, result, Date.now() - startedAt);
     sendJson(res, 200, result);
   } catch (error) {
     sendJson(res, 400, { error: error instanceof Error ? error.message : "Invalid AI action request" });
   }
+}
+
+function logAiAction(body: AiActionRequestBody, result: AiDecisionResult, requestDurationMs: number): void {
+  console.info(JSON.stringify({
+    event: "ai-action",
+    sessionId: normalizeString(body.sessionId),
+    phase: body.state?.phase,
+    questIndex: body.state?.questIndex,
+    playerId: body.playerId,
+    actionKind: body.actionKind,
+    source: result.source,
+    fallbackReason: result.fallbackReason,
+    speechRepairReason: result.speechRepairReason,
+    requestDurationMs,
+    apiDurationMs: result.apiTiming?.durationMs,
+    apiAttempts: result.apiTiming?.attempts,
+    promptChars: result.promptMetrics?.totalChars,
+    totalTokens: result.apiUsage?.totalTokens,
+    reasoningTokens: result.apiUsage?.reasoningTokens
+  }));
 }
 
 function readJsonBody(req: IncomingMessage): Promise<unknown> {

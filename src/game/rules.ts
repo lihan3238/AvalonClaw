@@ -184,10 +184,46 @@ export function proposeTeam(state: GameState, leaderId: string, teamIds: string[
 
   return {
     ...cloneState(state),
-    phase: "voting",
+    phase: "discussion",
     proposal: { leaderId, teamIds: [...teamIds] },
+    discussion: { nextSpeakerIndex: state.leaderIndex, spokenIds: [] },
     votes: {},
     questCards: {}
+  };
+}
+
+export function advanceDiscussionTurn(state: GameState, speakerId: string): GameState {
+  if (state.phase !== "discussion" || !state.proposal || !state.discussion) {
+    throw new Error("Discussion turns can only advance during discussion phase");
+  }
+
+  requirePlayer(state, speakerId);
+  const expectedSpeaker = state.players[state.discussion.nextSpeakerIndex];
+  if (!expectedSpeaker || expectedSpeaker.id !== speakerId) {
+    throw new Error(`${speakerId} is not the current discussion speaker`);
+  }
+  if (state.discussion.spokenIds.includes(speakerId)) {
+    throw new Error(`${speakerId} has already spoken in this discussion`);
+  }
+
+  const spokenIds = [...state.discussion.spokenIds, speakerId];
+  const next = cloneState(state);
+  if (spokenIds.length >= state.players.length) {
+    return {
+      ...next,
+      phase: "voting",
+      discussion: undefined,
+      votes: {},
+      questCards: {}
+    };
+  }
+
+  return {
+    ...next,
+    discussion: {
+      nextSpeakerIndex: (state.discussion.nextSpeakerIndex + 1) % state.players.length,
+      spokenIds
+    }
   };
 }
 
@@ -383,6 +419,7 @@ function cloneState(state: GameState): GameState {
     ...state,
     players: state.players.map((player) => ({ ...player, allegiance: player.allegiance ?? roleAllegiance(player.role) })),
     proposal: state.proposal ? { leaderId: state.proposal.leaderId, teamIds: [...state.proposal.teamIds] } : undefined,
+    discussion: state.discussion ? { nextSpeakerIndex: state.discussion.nextSpeakerIndex, spokenIds: [...state.discussion.spokenIds] } : undefined,
     votes: { ...state.votes },
     questCards: { ...state.questCards },
     questResults: cloneQuestResults(state.questResults)

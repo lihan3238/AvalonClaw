@@ -8,6 +8,21 @@ export function getLegalActionsForPlayer(state: GameState, playerId: string, act
     throw new Error(`Unknown player ${playerId}`);
   }
 
+  if (actionKind === "speak") {
+    if (state.phase !== "discussion" || !state.discussion) {
+      throw new Error("Speak actions are only available during discussion phase");
+    }
+    const speaker = state.players[state.discussion.nextSpeakerIndex];
+    if (speaker?.id !== playerId) {
+      throw new Error(`${playerId} is not the current discussion speaker`);
+    }
+    if (state.discussion.spokenIds.includes(playerId)) {
+      throw new Error(`${playerId} has already spoken`);
+    }
+
+    return [{ type: "speak" }];
+  }
+
   if (actionKind === "proposeTeam") {
     if (state.phase !== "proposal") {
       throw new Error("Proposal actions are only available during proposal phase");
@@ -48,6 +63,9 @@ export function getLegalActionsForPlayer(state: GameState, playerId: string, act
       : [{ type: "quest", card: "success" }, { type: "quest", card: "fail" }];
   }
 
+  if (actionKind !== "assassinate") {
+    throw new Error(`Unsupported action kind ${actionKind}`);
+  }
   if (state.phase !== "assassination") {
     throw new Error("Assassination actions are only available during assassination phase");
   }

@@ -1,5 +1,6 @@
 import {
   assassinateMerlin,
+  advanceDiscussionTurn,
   castVote,
   createInitialGame,
   getDefaultRoles,
@@ -88,12 +89,39 @@ describe("proposal and voting", () => {
     const game = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
 
     expect(() => proposeTeam(game, "p1", ["p1"])).toThrow(/requires 2 players/i);
-    expect(proposeTeam(game, "p1", ["p1", "p2"]).phase).toBe("voting");
+    expect(proposeTeam(game, "p1", ["p1", "p2"]).phase).toBe("discussion");
+  });
+
+  it("starts ordered discussion with the proposal leader still due to speak", () => {
+    let game = createInitialGame({
+      playerCount: 5,
+      roles: ["merlin", "percival", "loyal", "assassin", "morgana"],
+      leaderIndex: 3
+    });
+
+    game = proposeTeam(game, "p4", ["p4", "p5"]);
+
+    expect(game).toMatchObject({
+      phase: "discussion",
+      discussion: { nextSpeakerIndex: 3, spokenIds: [] }
+    });
+
+    game = advanceDiscussionTurn(game, "p4");
+    expect(game).toMatchObject({ phase: "discussion", discussion: { nextSpeakerIndex: 4, spokenIds: ["p4"] } });
+    game = advanceDiscussionTurn(game, "p5");
+    game = advanceDiscussionTurn(game, "p1");
+    game = advanceDiscussionTurn(game, "p2");
+    game = advanceDiscussionTurn(game, "p3");
+
+    expect(game.phase).toBe("voting");
+    expect(game.discussion).toBeUndefined();
+    expect(game.votes).toEqual({});
   });
 
   it("approves only strict majorities and advances to quest phase", () => {
     let game = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
     game = proposeTeam(game, "p1", ["p1", "p2"]);
+    game = finishDiscussion(game);
     game = castVote(game, "p1", true);
     game = castVote(game, "p2", true);
     game = castVote(game, "p3", false);
@@ -110,6 +138,7 @@ describe("proposal and voting", () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const leader = game.players[game.leaderIndex].id;
       game = proposeTeam(game, leader, [leader, game.players[(game.leaderIndex + 1) % game.players.length].id]);
+      game = finishDiscussion(game);
       for (const player of game.players) {
         game = castVote(game, player.id, false);
       }
@@ -125,6 +154,7 @@ describe("quest and assassination resolution", () => {
   it("fails a normal quest with one fail card", () => {
     let game = createInitialGame({ playerCount: 5, roles: ["merlin", "percival", "loyal", "assassin", "morgana"] });
     game = proposeTeam(game, "p1", ["p1", "p4"]);
+    game = finishDiscussion(game);
     for (const player of game.players) {
       game = castVote(game, player.id, true);
     }
@@ -198,6 +228,7 @@ function resolveQuestFour(playerCount: number, failCards: 1 | 2) {
   const teamIds = getQuestFourTeam(playerCount);
   let game = createInitialGame({ playerCount, roles, questIndex: 3 });
   game = proposeTeam(game, "p1", teamIds);
+  game = finishDiscussion(game);
   for (const player of game.players) {
     game = castVote(game, player.id, true);
   }
@@ -213,6 +244,15 @@ function resolveQuestFour(playerCount: number, failCards: 1 | 2) {
   }
   expect(submittedFails).toBe(failCards);
   return game;
+}
+
+function finishDiscussion(game: ReturnType<typeof createInitialGame>) {
+  let next = game;
+  while (next.phase === "discussion") {
+    const speaker = next.players[next.discussion?.nextSpeakerIndex ?? 0];
+    next = advanceDiscussionTurn(next, speaker.id);
+  }
+  return next;
 }
 
 function getQuestFourRoles(playerCount: number) {

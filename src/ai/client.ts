@@ -1,9 +1,10 @@
 import { chooseFallbackDecision } from "./fallback";
 import { parseAiDecision } from "./prompt";
-import type { AiActionKind, AiDecisionResult, AiFallbackDetail, AiFallbackReason, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
+import type { AiActionKind, AiDecisionResult, AiFallbackDetail, AiFallbackReason, AiRuntimeConfig, LegalAction, PublicTalkEntry, ReasoningEffort, TableLanguage } from "./types";
 import type { GameState } from "../game/types";
 
 interface RequestAiActionInput {
+  sessionId?: string;
   state: GameState;
   playerId: string;
   actionKind: AiActionKind;
@@ -12,6 +13,7 @@ interface RequestAiActionInput {
   reasoningEffort: ReasoningEffort;
   language: TableLanguage;
   model: string;
+  aiConfig: AiRuntimeConfig;
 }
 
 export async function requestAiAction(input: RequestAiActionInput): Promise<AiDecisionResult> {
